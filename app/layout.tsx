@@ -6,6 +6,7 @@ import { LayoutProvider } from "@/components/layout-provider";
 import { DataLoaderProvider } from "@/app/providers/DataLoaderProvider";
 import { TRPCProvider } from "@/app/providers/TRPCProvider";
 import { WalletProvider } from "@/contexts/WalletContext";
+import "./animations.css";
 import "./globals.css";
 
 
