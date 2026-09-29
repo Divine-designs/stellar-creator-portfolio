@@ -1,10 +1,11 @@
 /**
- * Soroban Indexer Service — Contract Simulation Pre-flight (#518)
+ * Soroban Indexer Service — Contract Simulation Pre-flight (#1343)
  *
  * Provides RPC simulation endpoints that validate transactions before
  * wallet confirmation, parsing gas estimates and surfacing failures early.
  */
 
+import StellarSdk from "stellar-sdk";
 import { getNetworkConfig } from "@/lib/config/network";
 import { rpcCall, startProbing } from "@/lib/config/rpc-fallback";
 
@@ -59,16 +60,43 @@ export async function simulateContractCall(
 }
 
 /**
- * Minimal XDR-like envelope builder (placeholder for actual Stellar SDK usage).
- * In production, replace with StellarSdk.TransactionBuilder output.
+ * Minimal transaction envelope builder using Stellar SDK XDR encoding.
+ * Constructs a valid Soroban transaction for RPC simulation without signing.
+ *
+ * @throws if the sourceAccount cannot be parsed as a valid Stellar address
  */
 function buildTransactionEnvelope(params: SimulateParams): string {
-  // Encode params as base64 JSON stub; real impl uses stellar-sdk XDR encoding.
-  const payload = {
-    contractId: params.contractId,
-    method: params.method,
-    args: params.args,
-    source: params.sourceAccount,
-  };
-  return Buffer.from(JSON.stringify(payload)).toString("base64");
+  const { network: networkName } = getNetworkConfig();
+  const network = networkName === "mainnet"
+    ? StellarSdk.Networks.PUBLIC_NETWORK_PASSPHRASE
+    : StellarSdk.Networks.TESTNET_NETWORK_PASSPHRASE;
+
+  // Build a contract invocation operation
+  const sourceAccount = new StellarSdk.Account(params.sourceAccount, "0");
+  const txBuilder = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: network,
+    timebounds: { minTime: 0, maxTime: 0 }, // Simulation; time bounds irrelevant
+  });
+
+  // Convert args to Soroban native types
+  const scArgs = params.args.map((arg) => {
+    if (typeof arg === "string") return StellarSdk.nativeToScVal(arg);
+    if (typeof arg === "number") return StellarSdk.nativeToScVal(arg);
+    if (typeof arg === "boolean") return StellarSdk.nativeToScVal(arg);
+    return StellarSdk.nativeToScVal(String(arg)); // fallback: stringify
+  });
+
+  // Add contract invocation operation
+  txBuilder.addOperation(
+    StellarSdk.Operation.invokeContractFunction({
+      contract: params.contractId,
+      function: params.method,
+      args: scArgs,
+    }),
+  );
+
+  // Build and encode as XDR (unsigned, for simulation only)
+  const tx = txBuilder.build();
+  return tx.toXDR();
 }
