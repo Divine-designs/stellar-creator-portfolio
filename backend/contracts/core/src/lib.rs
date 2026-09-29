@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Fee exceeds maximum of 10000 basis points")]
+    #[should_panic(expected = "Fee exceeds maximum of 1000 basis points (10%)")]
     fn test_initialize_above_max_panics() {
         let env = Env::default();
         env.mock_all_auths();
