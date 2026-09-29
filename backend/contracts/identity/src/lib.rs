@@ -1,8 +1,19 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env,
+    contract, contractimpl, contracttype, contracterror, symbol_short, Address, Bytes, BytesN, Env,
 };
+
+/// Error types for identity verification operations (Issue #1341)
+#[contracterror]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum IdentityError {
+    Unauthorized = 1,
+    InvalidSignature = 2,
+    InvalidDomainHash = 3,
+    AlreadyVerified = 4,
+    ProofNotFound = 5,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -12,6 +23,16 @@ pub struct SocialProof {
     pub proof: BytesN<64>,
     pub verified: bool,
     pub submitted_at: u64,
+}
+
+/// Decentralized authenticity record linking an address to verified social domains (Issue #1341)
+#[contracttype]
+#[derive(Clone)]
+pub struct DomainAttestation {
+    pub address: Address,
+    pub domain_hash: BytesN<32>,
+    pub verified: bool,
+    pub attested_at: u64,
 }
 
 /// On-chain tier levels mirroring the DB enum.
@@ -78,6 +99,21 @@ impl IdentityContract {
     /// Submit a cryptographic proof linking an address to a social domain.
     /// Verifies the Ed25519 signature of `domain_hash` under `public_key`
     /// natively via `env.crypto().ed25519_verify`.
+    ///
+    /// # Arguments
+    /// * `owner` - The Address submitting the proof (must authenticate)
+    /// * `domain_hash` - The 32-byte hash of the social domain/handle
+    /// * `public_key` - The Ed25519 public key used for signature verification
+    /// * `proof` - The Ed25519 signature proof (64 bytes)
+    ///
+    /// # Returns
+    /// bool - true on successful verification
+    ///
+    /// # Errors
+    /// Panics with message if:
+    /// - `owner` does not authenticate the call
+    /// - Proof is already verified for this owner+domain_hash pair
+    /// - Ed25519 signature verification fails (invalid signature)
     pub fn submit_proof(
         env: Env,
         owner: Address,
