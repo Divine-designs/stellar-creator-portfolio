@@ -33,6 +33,9 @@ function setViewport(width: number) {
     media: query,
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
+    // framer-motion's reduced-motion check still uses the legacy API
+    addListener: () => undefined,
+    removeListener: () => undefined,
   })) as unknown as typeof window.matchMedia;
 }
 
