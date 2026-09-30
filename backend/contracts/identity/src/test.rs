@@ -151,6 +151,83 @@ fn test_different_owners_same_hash_are_independent() {
     assert!(client.has_proof(&owner_b, &hash));
 }
 
+// ── Issue #1341: Error boundary tests for decentralized authenticity ────────
+
+#[test]
+#[should_panic]
+fn test_unauthorized_signature_panics() {
+    let env = test_env();
+    let (client, _admin) = deploy(&env);
+    let owner = new_address(&env);
+    let unauthorized = new_address(&env);
+    let hash = domain_hash(&env, 12);
+    let (pk, sig) = sign(&env, &hash);
+
+    env.as_contract(&client.address, || {
+        env.mock_all_auths();
+        // Mock auth only for unauthorized, not owner
+        client.submit_proof(&unauthorized, &hash, &pk, &sig);
+    });
+}
+
+#[test]
+#[should_panic]
+fn test_invalid_public_key_signature_mismatch_panics() {
+    let env = test_env();
+    let (client, _admin) = deploy(&env);
+    let owner = new_address(&env);
+    let hash = domain_hash(&env, 13);
+    let (_, sig) = sign(&env, &hash);
+    let (wrong_pk, _) = sign(&env, &domain_hash(&env, 100));
+
+    // Signature from one key with a different public key = verification fails
+    client.submit_proof(&owner, &hash, &wrong_pk, &sig);
+}
+
+#[test]
+fn test_multiple_proofs_per_user() {
+    let env = test_env();
+    let (client, _admin) = deploy(&env);
+    let owner = new_address(&env);
+
+    // User can submit multiple proofs for different domains
+    let hash1 = domain_hash(&env, 14);
+    let hash2 = domain_hash(&env, 15);
+    let (pk1, sig1) = sign(&env, &hash1);
+    let (pk2, sig2) = sign(&env, &hash2);
+
+    assert!(client.submit_proof(&owner, &hash1, &pk1, &sig1));
+    assert!(client.submit_proof(&owner, &hash2, &pk2, &sig2));
+    assert_eq!(client.proof_count(&owner), 2);
+    assert!(client.has_proof(&owner, &hash1));
+    assert!(client.has_proof(&owner, &hash2));
+}
+
+#[test]
+fn test_kyc_attestation_by_admin_only() {
+    let env = test_env();
+    let (client, admin) = deploy(&env);
+    let user = new_address(&env);
+
+    // Admin can attest
+    client.attest_kyc(&admin, &user, &KycLevel::Enhanced);
+    let att = client.get_kyc_attestation(&user);
+    assert!(att.is_some());
+    assert_eq!(att.unwrap().level, KycLevel::Enhanced);
+}
+
+#[test]
+#[should_panic(expected = "Only admin can attest KYC")]
+fn test_non_admin_attest_kyc_fails() {
+    let env = test_env();
+    let (client, _admin) = deploy(&env);
+    let user = new_address(&env);
+    let non_admin = new_address(&env);
+
+    // Non-admin cannot attest
+    client.attest_kyc(&non_admin, &user, &KycLevel::Basic);
+}
+
 #[test]
 fn test_attest_kyc_succeeds() {
     let env = test_env();
