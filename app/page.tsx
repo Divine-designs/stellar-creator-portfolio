@@ -27,7 +27,7 @@ export default function Home() {
           {/* Minimal Background - Professional Look */}
           <div className="absolute inset-0 bg-gradient-to-b from-primary/5 via-transparent to-transparent" />
 
-          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24 md:py-32 animate-fade-in">
+          <div className="relative page-container py-16 sm:py-24 md:py-32 animate-fade-in">
             <div className="text-center max-w-4xl mx-auto">
               {/* Subtitle Badge */}
               <p className="text-sm font-semibold text-primary mb-4 uppercase tracking-wide">
@@ -69,7 +69,7 @@ export default function Home() {
 
         {/* Stats Section */}
         <section className="py-12 sm:py-16 border-b border-border bg-muted/30">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
               <AnimatedCounter value={creators.length} label="Tamgora Creators" suffix="+" />
               <AnimatedCounter value={creators.reduce((sum, c) => sum + c.projects.length, 0)} label="Incredible Projects" suffix="+" />
@@ -83,7 +83,7 @@ export default function Home() {
 
         {/* Featured Creators Section */}
         <section className="py-16 sm:py-24">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             {/* Section Header */}
             <div className="text-center mb-12 sm:mb-16">
               <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-3 sm:mb-4">
@@ -120,7 +120,7 @@ export default function Home() {
 
         {/* Features Section */}
         <section className="py-16 sm:py-24 bg-muted/30 border-b border-border">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="text-center mb-12 sm:mb-16">
               <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-3">
                 Why Choose Tamgora?

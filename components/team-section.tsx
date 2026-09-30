@@ -70,7 +70,7 @@ const teamMembers: TeamMember[] = [
 export function TeamSection() {
   return (
     <section className="py-16 sm:py-24 bg-muted/30 border-b border-border">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="page-container">
         {/* Section Header */}
         <div className="text-center mb-12 sm:mb-16">
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-4">

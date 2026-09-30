@@ -221,7 +221,7 @@ export default function BountiesClient({ bounties }: { bounties: Bounty[] }) {
 
       {/* Hero */}
       <section className="border-b border-border bg-muted/30 py-12 sm:py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="page-container">
           <h1 className="text-4xl sm:text-5xl font-bold text-foreground mb-3">Bounty Marketplace</h1>
           <p className="text-lg text-muted-foreground max-w-2xl">
             Discover short-term, high-impact projects. Apply with your proposal and get paid via escrow.
@@ -231,7 +231,7 @@ export default function BountiesClient({ bounties }: { bounties: Bounty[] }) {
 
       {/* Filters */}
       <section className="border-b border-border py-6 sticky top-16 bg-background/80 backdrop-blur-md z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-3">
+        <div className="page-container space-y-3">
           <div className="flex flex-wrap gap-2 items-center">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Difficulty:</span>
             {DIFFICULTIES.map((d) => (
@@ -268,7 +268,7 @@ export default function BountiesClient({ bounties }: { bounties: Bounty[] }) {
 
       {/* Listing */}
       <section className="py-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="page-container">
           <p className="text-sm text-muted-foreground mb-6">
             {filtered.length > 0
               ? `Showing ${filtered.length} bounties`

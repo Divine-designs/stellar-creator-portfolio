@@ -40,7 +40,7 @@ export default function FreelancersPage() {
         <section className="relative overflow-hidden py-16 sm:py-24 border-b border-border">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
           <div className="absolute top-0 right-0 w-96 h-96 bg-accent/10 rounded-full blur-3xl" />
-          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="relative page-container">
             <div className="text-center mb-12">
               <h1 className="text-4xl sm:text-5xl font-bold text-foreground mb-4 text-balance">
                 Hire Tamgora Freelancers
@@ -73,7 +73,7 @@ export default function FreelancersPage() {
 
         {/* Filters & Content */}
         <section className="py-12">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             {/* Filters */}
             <div className="mb-12 pb-8 border-b border-border">
               <h3 id="discipline-filter-heading" className="text-lg font-semibold text-foreground mb-4">
@@ -134,7 +134,7 @@ export default function FreelancersPage() {
 
         {/* How It Works */}
         <section className="py-16 sm:py-24 bg-muted/30 border-y border-border">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="text-center mb-12">
               <h2 className="text-3xl sm:text-4xl font-bold text-foreground mb-4">
                 How It Works
@@ -178,7 +178,7 @@ export default function FreelancersPage() {
 
         {/* Features */}
         <section className="py-16 sm:py-24">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="text-center mb-12">
               <h2 className="text-3xl sm:text-4xl font-bold text-foreground mb-4">
                 Why Hire from Tamgora?

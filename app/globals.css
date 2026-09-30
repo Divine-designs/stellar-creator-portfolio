@@ -141,6 +141,53 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* ── Responsive layout foundation (#1339) ─────────────────────────────────────
+ * Breakpoints (Tailwind defaults plus two ends of the range):
+ *   xs 30rem (480px) large phones   sm 40rem   md 48rem (tablet, sidebar/nav switch)
+ *   lg 64rem   xl 80rem   2xl 96rem   3xl 120rem (1920px ultra-wide desktop)
+ * Pages should use `page-container` for horizontal padding + max width and
+ * `app-shell` for sidebar layouts rather than hand-written px/max-w stacks.
+ */
+@theme {
+  --breakpoint-xs: 30rem;
+  --breakpoint-3xl: 120rem;
+}
+
+/* Fluid gutters (16px on phones -> 32px on desktop) and a width cap that grows
+ * on ultra-wide displays instead of leaving a narrow column in the middle. */
+@utility page-container {
+  width: 100%;
+  margin-inline: auto;
+  max-width: 80rem;
+  padding-inline: clamp(1rem, 0.5rem + 2vw, 2rem);
+
+  @media (width >= 96rem) {
+    max-width: 90rem;
+  }
+  @media (width >= 120rem) {
+    max-width: 105rem;
+  }
+}
+
+/* CSS-grid app shell: single column on mobile, `sidebar | content` from md. */
+@utility app-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100dvh;
+
+  @media (width >= 48rem) {
+    grid-template-columns: var(--app-sidebar-width, 15rem) minmax(0, 1fr);
+  }
+  @media (width >= 120rem) {
+    --app-sidebar-width: 18rem;
+  }
+}
+
+/* Keep fixed / bottom UI clear of notches and home indicators. */
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -152,6 +199,9 @@
   
   body {
     @apply bg-background text-foreground;
+    min-height: 100dvh;
+    /* Never let one overflowing child create sideways scrolling on phones. */
+    overflow-x: clip;
     transition: background-color 0.3s ease, color 0.3s ease;
   }
   
