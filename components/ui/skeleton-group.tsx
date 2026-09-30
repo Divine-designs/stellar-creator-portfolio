@@ -4,11 +4,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 /** Skeleton for a full creator profile page */
 export function CreatorProfileSkeleton() {
   return (
-    <div className="animate-pulse">
+    <div className="animate-pulse" role="status" aria-busy="true" aria-label="Loading creator profile">
       {/* Cover */}
       <div className="h-48 sm:h-64 bg-muted w-full" />
       {/* Avatar + name */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="page-container">
         <div className="flex items-end gap-4 -mt-12 mb-6">
           <div className="w-24 h-24 rounded-full bg-muted border-4 border-background" />
           <div className="pb-2 space-y-2 flex-1">
@@ -39,7 +39,7 @@ export function CreatorProfileSkeleton() {
 /** Skeleton for the bounties listing page */
 export function BountiesPageSkeleton() {
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 animate-pulse">
+    <div className="page-container py-12 animate-pulse" role="status" aria-busy="true" aria-label="Loading bounties">
       {/* Header */}
       <div className="h-10 bg-muted rounded w-64 mb-3" />
       <div className="h-5 bg-muted rounded w-96 mb-10" />
@@ -190,6 +190,154 @@ export function PortfolioWidgetSkeleton({ cards = 2 }: { cards?: number }) {
       {Array.from({ length: cards }).map((_, i) => (
         <LinkCardSkeleton key={i} />
       ))}
+    </div>
+  );
+}
+
+// ─── Section-level variants for Suspense boundaries (#1338) ──────────────────
+// Each one mirrors the exact dimensions of the streamed section it stands in
+// for, so content swapping in causes no layout shift.
+
+/** Mirrors `BountiesStatsSection`: three stat tiles in a fixed 3-column grid. */
+export function BountiesStatsSkeleton() {
+  return (
+    <div className="grid grid-cols-3 gap-4 mb-8 animate-pulse" role="status" aria-busy="true" aria-label="Loading bounty stats">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="rounded-xl border border-border p-4 flex flex-col items-center gap-2">
+          <div className="h-8 bg-muted rounded w-16" />
+          <div className="h-3 bg-muted rounded w-20" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Mirrors `CreatorHeroSection`: cover image, avatar and name row. */
+export function CreatorHeroSkeleton() {
+  return (
+    <div className="animate-pulse" role="status" aria-busy="true" aria-label="Loading creator header">
+      <div className="h-48 sm:h-64 bg-muted w-full" />
+      <div className="page-container">
+        <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-12 mb-8">
+          <div className="w-24 h-24 rounded-full bg-muted border-4 border-background shrink-0" />
+          <div className="pb-1 space-y-2">
+            <div className="h-8 bg-muted rounded w-56" />
+            <div className="h-4 bg-muted rounded w-40" />
+          </div>
+          <div className="sm:ml-auto flex gap-3 pb-1">
+            <div className="h-9 bg-muted rounded-md w-24" />
+            <div className="h-9 bg-muted rounded-md w-24" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Mirrors `CreatorBioSection`: tagline, bio paragraph and skill chips. */
+export function CreatorBioSkeleton() {
+  return (
+    <div className="mb-12 space-y-4 animate-pulse" role="status" aria-busy="true" aria-label="Loading creator bio">
+      <div className="h-6 bg-muted rounded w-2/3 max-w-md" />
+      <div className="max-w-3xl">
+        <TextSkeleton lines={4} />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="h-7 bg-muted rounded-full w-20" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Mirrors `CreatorProjectsSection`: the responsive project-card grid. */
+export function CreatorProjectsSkeleton({ count = 3 }: { count?: number }) {
+  return (
+    <div
+      className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading projects"
+    >
+      {Array.from({ length: count }).map((_, i) => (
+        <CardSkeleton key={i} />
+      ))}
+    </div>
+  );
+}
+
+/** Mirrors `CreatorCtaSection`: the bordered call-to-action panel. */
+export function CreatorCtaSkeleton() {
+  return (
+    <div
+      className="mt-16 rounded-xl border border-border p-10 flex flex-col items-center gap-4 animate-pulse"
+      aria-hidden="true"
+    >
+      <div className="h-7 bg-muted rounded w-64" />
+      <div className="h-4 bg-muted rounded w-80 max-w-full" />
+      <div className="h-11 bg-muted rounded-lg w-40" />
+    </div>
+  );
+}
+
+/** Route-level chrome placeholder (header bar + content) used by `loading.tsx` files. */
+export function RouteSkeleton({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <div className="min-h-dvh flex flex-col bg-background" role="status" aria-busy="true" aria-label={label}>
+      <div className="h-16 border-b border-border/40 shrink-0">
+        <div className="page-container h-full flex items-center justify-between animate-pulse">
+          <div className="h-10 w-10 rounded-lg bg-muted" />
+          <div className="hidden md:flex gap-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-8 w-20 rounded-lg bg-muted" />
+            ))}
+          </div>
+          <div className="h-9 w-9 rounded-lg bg-muted" />
+        </div>
+      </div>
+      <main className="flex-grow">{children}</main>
+    </div>
+  );
+}
+
+/** Heading + filter pills + card grid: the shape of the creators / freelancers listings. */
+export function CreatorGridSkeleton({ count = 6 }: { count?: number }) {
+  return (
+    <div className="page-container py-12 animate-pulse">
+      <div className="h-10 bg-muted rounded w-64 mb-3" />
+      <div className="h-5 bg-muted rounded w-96 max-w-full mb-8" />
+      <div className="flex gap-2 mb-8 flex-wrap">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-8 bg-muted rounded-full w-24" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {Array.from({ length: count }).map((_, i) => (
+          <CardSkeleton key={i} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Two-column bounty detail layout: title / meta, scope and a sidebar card. */
+export function BountyDetailSkeleton() {
+  return (
+    <div className="page-container py-12 animate-pulse">
+      <div className="h-4 bg-muted rounded w-40 mb-6" />
+      <div className="h-10 bg-muted rounded w-2/3 mb-4" />
+      <div className="flex gap-3 mb-8">
+        <div className="h-7 bg-muted rounded-full w-24" />
+        <div className="h-7 bg-muted rounded-full w-28" />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 space-y-4">
+          <TextSkeleton lines={6} />
+          <div className="h-40 bg-muted rounded-lg" />
+        </div>
+        <div className="h-64 bg-muted rounded-lg" />
+      </div>
     </div>
   );
 }
