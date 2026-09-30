@@ -63,7 +63,7 @@ export default function CreatorsPage() {
       <main className="flex-grow">
         {/* Hero Section */}
         <section className="border-b border-border bg-muted/30 py-12 sm:py-16">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <h1 className="text-4xl sm:text-5xl font-bold text-foreground mb-3">
               Creator Directory
             </h1>
@@ -75,7 +75,7 @@ export default function CreatorsPage() {
 
         {/* Filter Section */}
         <section className="border-b border-border py-8 sticky top-16 bg-background/80 backdrop-blur-md z-40">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="flex items-center justify-between flex-wrap gap-4">
               <h2 className="text-sm font-semibold text-foreground">Filter by Discipline:</h2>
               <div className="flex flex-wrap gap-2">
@@ -98,7 +98,7 @@ export default function CreatorsPage() {
 
         {/* Creators Grid */}
         <section className="py-16 sm:py-24">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             {isError ? (
               <div className="text-center py-12">
                 <p className="text-lg text-red-500 mb-4">

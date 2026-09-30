@@ -20,7 +20,7 @@ export async function CreatorHeroSection({ id }: { id: string }) {
         />
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="page-container">
         <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-12 mb-8">
           <div className="relative w-24 h-24 rounded-full overflow-hidden border-4 border-background bg-muted shrink-0">
             <Image src={creator.avatar} alt={creator.name} fill className="object-cover" />

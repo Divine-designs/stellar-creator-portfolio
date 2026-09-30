@@ -64,7 +64,7 @@ function ComparePageInner() {
       <main className="flex-grow">
         {/* Header */}
         <section className="border-b border-border bg-muted/30 py-8">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="flex items-center gap-4 mb-4">
               <Button
                 variant="ghost"
@@ -87,7 +87,7 @@ function ComparePageInner() {
 
         {/* Comparison Table */}
         <section className="py-12">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="page-container">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-6">
               {comparedCreators.map((creator) => (
                 <div

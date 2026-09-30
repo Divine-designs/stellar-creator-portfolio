@@ -22,7 +22,7 @@ export function FeaturedBounties() {
 
   return (
     <section className="py-16 sm:py-24 border-b border-border">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="page-container">
         {/* Section Header */}
         <div className="flex items-start justify-between mb-12 sm:mb-16">
           <div>
