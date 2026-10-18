@@ -134,4 +134,25 @@ describe('GET /api/analytics', () => {
     expect(body.peerComparison[0]).toHaveProperty('you')
     expect(body.peerComparison[0]).toHaveProperty('average')
   })
+
+  it('leaderboard response exposes only bucketed earnings labels', async () => {
+    const res = await GET(makeRequest({ preset: '30d', view: 'leaderboard' }))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body.leaderboard)).toBe(true)
+    const allowed = ['<1k', '1k–5k', '5k–10k', '10k+']
+    for (const entry of body.leaderboard) {
+      expect(allowed).toContain(entry.earningsBucket)
+      expect(entry).not.toHaveProperty('earnings')
+      expect(entry).not.toHaveProperty('totalEarnings')
+      expect(entry).not.toHaveProperty('earned')
+    }
+  })
+
+  it('leaderboard JSON contains no numeric earnings values', async () => {
+    const res = await GET(makeRequest({ preset: '30d', view: 'leaderboard' }))
+    const body = await res.json()
+    const serialized = JSON.stringify(body.leaderboard ?? [])
+    expect(serialized).not.toMatch(/"(earnings|totalEarnings|earned)"\s*:\s*\d/)
+  })
 })
