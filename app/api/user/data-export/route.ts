@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma';
  * GET /api/user/data-export
  *
  * Issue #811 — GDPR/CCPA right-to-access (data portability).
+ * Issue #1539 — include every user-linked model in the archive.
  * Returns a complete JSON archive of all data held for the authenticated user.
  * Logs the request to AuditLog for compliance.
  *
@@ -28,6 +29,11 @@ export async function GET(req: NextRequest) {
       bounties: true,
       applications: true,
       notifications: true,
+      messages: true,
+      reviews: true,
+      payments: true,
+      referrals: true,
+      kycVerification: true,
       auditLogs: {
         orderBy: { createdAt: 'desc' },
         take: 1000,
@@ -66,10 +72,34 @@ export async function GET(req: NextRequest) {
     },
     bounties: user.bounties,
     applications: user.applications,
+    messages: user.messages.map(m => ({
+      id: m.id, bountyId: m.bountyId, senderId: m.senderId, receiverId: m.receiverId,
+      content: m.content, createdAt: m.createdAt, readAt: m.readAt,
+    })),
+    reviews: user.reviews.map(r => ({
+      id: r.id, bountyId: r.bountyId, reviewerId: r.reviewerId, revieweeId: r.revieweeId,
+      rating: r.rating, comment: r.comment, createdAt: r.createdAt,
+    })),
+    payments: user.payments.map(p => ({
+      id: p.id, bountyId: p.bountyId, amount: p.amount, currency: p.currency,
+      status: p.status, createdAt: p.createdAt,
+    })),
     notifications: user.notifications.map(n => ({
       id: n.id, title: n.title, body: n.body, type: n.type,
       createdAt: n.createdAt, readAt: n.readAt,
     })),
+    referrals: user.referrals.map(r => ({
+      id: r.id, referredUserId: r.referredUserId, status: r.status, createdAt: r.createdAt,
+    })),
+    kycVerification: user.kycVerification
+      ? {
+          id: user.kycVerification.id,
+          status: user.kycVerification.status,
+          provider: user.kycVerification.provider,
+          submittedAt: user.kycVerification.submittedAt,
+          reviewedAt: user.kycVerification.reviewedAt,
+        }
+      : null,
     auditLogs: user.auditLogs,
   };
 
