@@ -1,13 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth/config';
 import { prisma } from '@/lib/prisma';
 
-type Resolution = 'release_to_freelancer' | 'refund_to_creator' | 'split_50_50';
+const RESOLUTIONS = ['release_to_freelancer', 'refund_to_creator', 'split_50_50'] as const;
+type Resolution = (typeof RESOLUTIONS)[number];
+
+const resolveSchema = z
+  .object({
+    resolution: z.enum(RESOLUTIONS),
+    note: z.string().min(10).max(2000).optional(),
+    // Optional explicit split amounts (in stroops) for split resolutions.
+    splitAmounts: z
+      .object({
+        freelancer: z.number().int().nonnegative(),
+        creator: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /**
  * POST /api/admin/disputes/:id/resolve
- * Body: { resolution: Resolution, note?: string }
+ * Body: { resolution: Resolution, note?: string, splitAmounts?: { freelancer, creator } }
  *
  * Resolves a dispute by:
  * 1. Calling the on-chain resolve_dispute via the Stellar API
@@ -27,13 +44,23 @@ export async function POST(
   }
 
   const { id: disputeId } = await params;
-  const body = await req.json();
-  const resolution: Resolution = body.resolution;
-  const note: string | undefined = body.note;
 
-  if (!['release_to_freelancer', 'refund_to_creator', 'split_50_50'].includes(resolution)) {
-    return NextResponse.json({ error: 'Invalid resolution' }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+
+  const parsed = resolveSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', details: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+
+  const { resolution, note, splitAmounts } = parsed.data;
 
   const dispute = await prisma.dispute.findUnique({ where: { id: disputeId } });
   if (!dispute) {
@@ -43,6 +70,23 @@ export async function POST(
     return NextResponse.json({ error: 'Dispute is not open' }, { status: 409 });
   }
 
+  // Validate split amounts against the escrow total when provided.
+  if (splitAmounts) {
+    const escrowTotal = Number(dispute.amount);
+    const sum = splitAmounts.freelancer + splitAmounts.creator;
+    if (!Number.isFinite(escrowTotal) || sum !== escrowTotal) {
+      return NextResponse.json(
+        { error: 'Split amounts must sum to the escrow total' },
+        { status: 400 }
+      );
+    }
+  }
+
+  const beforeState = {
+    status: dispute.status,
+    reason: dispute.reason ?? null,
+  };
+
   // Call the on-chain resolve_dispute function via the backend API
   const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
   let onChainTxId: string | null = null;
@@ -50,7 +94,7 @@ export async function POST(
     const resp = await fetch(`${apiBase}/api/escrow/${dispute.escrowId}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resolution }),
+      body: JSON.stringify({ resolution, splitAmounts: splitAmounts ?? null }),
     });
     if (resp.ok) {
       const data = await resp.json();
@@ -60,10 +104,15 @@ export async function POST(
     // Non-fatal — backend API may not be running in dev; we still update DB
   }
 
-  await prisma.dispute.update({
+  const updated = await prisma.dispute.update({
     where: { id: disputeId },
     data: { status: 'resolved', reason: resolution },
   });
+
+  const afterState = {
+    status: updated.status,
+    reason: updated.reason ?? null,
+  };
 
   await prisma.auditLog.create({
     data: {
@@ -72,7 +121,15 @@ export async function POST(
       action: `resolve.${resolution}`,
       resourceId: disputeId,
       status: 'SUCCESS',
-      payload: { resolution, note: note ?? null, onChainTxId, escrowId: dispute.escrowId },
+      payload: {
+        resolution,
+        note: note ?? null,
+        splitAmounts: splitAmounts ?? null,
+        onChainTxId,
+        escrowId: dispute.escrowId,
+        before: beforeState,
+        after: afterState,
+      },
       requestPath: req.nextUrl.pathname,
       httpMethod: 'POST',
     },
