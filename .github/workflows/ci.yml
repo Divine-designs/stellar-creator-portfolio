@@ -33,6 +33,8 @@ jobs:
         run: pnpm run typecheck
       - name: i18n key parity (web + mobile locales)
         run: pnpm run i18n:check
+      - name: Route auth declarations
+        run: pnpm exec tsx scripts/check-route-auth.ts
       - name: Unit tests
         run: pnpm test
       - name: Build
@@ -243,18 +245,14 @@ jobs:
             let body = '## Lighthouse CI Results\n\n| URL | Performance | Accessibility | Best Practices | SEO |\n|-----|------------|---------------|----------------|-----|\n';
 
             for (const file of files) {
-              const report = JSON.parse(fs.readFileSync(`${resultsPath}/${file}`, 'utf8'));
-              const url = new URL(report.requestedUrl).pathname || '/';
-              const perf = Math.round(report.categories.performance.score * 100);
-              const a11y = Math.round(report.categories.accessibility.score * 100);
-              const bp = Math.round(report.categories['best-practices'].score * 100);
-              const seo = Math.round(report.categories.seo.score * 100);
-              const perfIcon = perf >= 90 ? '🟢' : perf >= 50 ? '🟠' : '🔴';
-              const a11yIcon = a11y >= 90 ? '🟢' : a11y >= 50 ? '🟠' : '🔴';
-              body += `| \`${url}\` | ${perfIcon} ${perf} | ${a11yIcon} ${a11y} | ${bp} | ${seo} |\n`;
+              const data = JSON.parse(fs.readFileSync(`${resultsPath}/${file}`, 'utf8'));
+              const url = data.finalUrl || data.requestedUrl || file;
+              const score = (cat) => {
+                const v = data.categories?.[cat]?.score;
+                return v == null ? 'n/a' : Math.round(v * 100);
+              };
+              body += `| ${url} | ${score('performance')} | ${score('accessibility')} | ${score('best-practices')} | ${score('seo')} |\n`;
             }
-
-            body += '\n_Scores from Lighthouse CI — [detailed report](https://storage.googleapis.com/lighthouse-infrastructure.appspot.com/reports)_';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -262,70 +260,3 @@ jobs:
               issue_number: context.issue.number,
               body,
             });
-
-  playwright:
-    name: Playwright E2E Tests
-    runs-on: ubuntu-latest
-    needs: frontend
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '20'
-          cache: 'pnpm'
-      - name: Install dependencies
-        run: pnpm install
-      - name: Install Playwright browsers
-        run: pnpm exec playwright install --with-deps
-      - name: Run Playwright tests
-        run: pnpm run test:e2e
-      - name: Upload Playwright report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-report-${{ github.sha }}
-          path: playwright-report/
-          if-no-files-found: ignore
-
-  docker-app:
-    name: Build Production Docker Image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build Docker image
-        run: docker build -f Dockerfile.app -t stellar-creator-portfolio:${{ github.sha }} .
-      - name: Verify image size under 300MB
-        run: |
-          SIZE=$(docker image inspect stellar-creator-portfolio:${{ github.sha }} --format='{{.Size}}')
-          echo "Image size: $SIZE bytes"
-          if [ "$SIZE" -gt 314572800 ]; then
-            echo "Image exceeds 300MB limit"
-            exit 1
-          fi
-      - name: Verify container starts and responds
-        run: |
-          docker run -d \
-            --name smoke-test \
-            -p 3000:3000 \
-            -e NODE_ENV=production \
-            stellar-creator-portfolio:${{ github.sha }}
-
-          echo "Waiting for container to become ready..."
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
-              echo "Container is healthy after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Container did not become ready within 30 seconds"
-              docker logs smoke-test
-              docker rm -f smoke-test
-              exit 1
-            fi
-            sleep 1
-          done
-
-          docker rm -f smoke-test

@@ -9,6 +9,34 @@ const registerSchema = z.object({
   name: z.string().min(1).max(100).optional(),
 });
 
+// Registration throttling. IP limit is generous to tolerate shared IPs
+// (offices, mobile NAT); the per-email limit is strict to stop enumeration
+// and mass account creation against a single address.
+const WINDOW_MS = 15 * 60 * 1000;
+const IP_LIMIT = 20;
+const EMAIL_LIMIT = 5;
+
+const ipHits = new Map<string, number[]>();
+const emailHits = new Map<string, number[]>();
+
+function isLimited(store: Map<string, number[]>, key: string, limit: number): boolean {
+  const now = Date.now();
+  const recent = (store.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
+  if (recent.length >= limit) {
+    store.set(key, recent);
+    return true;
+  }
+  recent.push(now);
+  store.set(key, recent);
+  return false;
+}
+
+function clientIp(req: NextRequest): string {
+  const forwarded = req.headers.get('x-forwarded-for');
+  if (forwarded) return forwarded.split(',')[0].trim();
+  return req.headers.get('x-real-ip') ?? 'unknown';
+}
+
 /**
  * POST /api/auth/register — email/password account creation.
  *
@@ -28,10 +56,19 @@ export async function POST(req: NextRequest) {
     );
   }
   const { email, password, name } = parsed.data;
+  const normalizedEmail = email.toLowerCase();
+
+  if (isLimited(ipHits, clientIp(req), IP_LIMIT)) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  }
+  if (isLimited(emailHits, normalizedEmail, EMAIL_LIMIT)) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  }
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    return NextResponse.json({ error: 'An account with this email already exists' }, { status: 409 });
+    // Uniform response: do not reveal whether the email is already registered.
+    return NextResponse.json({ success: true });
   }
 
   await prisma.user.create({
