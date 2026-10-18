@@ -66,38 +66,57 @@ const BASE_URL =
 export const API_VERSION = 'v1';
 export const API_BASE = `/api/${API_VERSION}`;
 
-/** localStorage key where the JWT is stored after a successful auth flow. */
-const JWT_STORAGE_KEY = 'stellar_auth_token';
+/**
+ * Legacy localStorage key that used to hold the JWT. Auth now lives in an
+ * httpOnly cookie set by the server, so this key is only referenced to purge
+ * any stale token left behind by older clients.
+ */
+const LEGACY_JWT_STORAGE_KEY = 'stellar_auth_token';
+
+/** Name of the non-httpOnly cookie the server uses to expose the CSRF token. */
+const CSRF_COOKIE_NAME = 'csrf_token';
+
+/** Header the server expects the CSRF token to be echoed back in. */
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
 
 /**
- * Persist a JWT so subsequent requests are automatically authenticated.
- * Call this after a successful /api/auth/verify response.
+ * Remove any JWT persisted by older versions of the app. The token is now
+ * stored in an httpOnly cookie and is never readable from `document`.
  */
-export function setAuthToken(token: string): void {
+export function clearLegacyAuthToken(): void {
   if (typeof window !== 'undefined') {
-    localStorage.setItem(JWT_STORAGE_KEY, token);
+    try {
+      localStorage.removeItem(LEGACY_JWT_STORAGE_KEY);
+    } catch {
+      // localStorage may be unavailable (private mode / disabled) — ignore.
+    }
   }
 }
 
-/** Remove the stored JWT (e.g. on logout). */
-export function clearAuthToken(): void {
-  if (typeof window !== 'undefined') {
-    localStorage.removeItem(JWT_STORAGE_KEY);
-  }
+// Purge the legacy token as soon as this module loads in the browser.
+if (typeof window !== 'undefined') {
+  clearLegacyAuthToken();
 }
 
-/** Read the current JWT from localStorage, or null if not present. */
-export function getAuthToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(JWT_STORAGE_KEY);
+/** Read the CSRF token from its (non-httpOnly) cookie, if present. */
+function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(
+    new RegExp(`(?:^|; )${CSRF_COOKIE_NAME}=([^;]*)`),
+  );
+  return match ? decodeURIComponent(match[1]) : null;
 }
+
+/** HTTP methods that mutate state and therefore require CSRF protection. */
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /**
  * Fetch a backend endpoint and unwrap the `ApiResponse<T>` envelope.
  * Throws `ApiClientError` on any failure so callers never receive raw errors.
  *
- * JWT interceptor: if a token is stored via `setAuthToken`, it is automatically
- * attached as `Authorization: Bearer <token>` on every request.
+ * Auth is carried by an httpOnly cookie, so requests are sent with
+ * `credentials: 'include'`. Mutating requests additionally echo the CSRF token
+ * from the `csrf_token` cookie via the `X-CSRF-Token` header.
  */
 export async function apiFetch<T>(
   path: string,
@@ -105,24 +124,24 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
 
-  // JWT interceptor — attach token when available
-  const token = getAuthToken();
-  const authHeader: Record<string, string> = token
-    ? { Authorization: `Bearer ${token}` }
+  const method = (init.method ?? 'GET').toUpperCase();
+  const csrfToken = MUTATING_METHODS.has(method) ? getCsrfToken() : null;
+  const csrfHeader: Record<string, string> = csrfToken
+    ? { [CSRF_HEADER_NAME]: csrfToken }
     : {};
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
     'Accept-Version': API_VERSION,
-    ...authHeader,
+    ...csrfHeader,
     ...(init.headers ?? {}),
   };
 
   notifyLoadingChange(1);
   let res: Response;
   try {
-    res = await fetch(url, { ...init, headers });
+    res = await fetch(url, { ...init, headers, credentials: 'include' });
   } catch {
     notifyLoadingChange(-1);
     throw ApiClientError.network();
@@ -271,95 +290,5 @@ export async function fetchBounties(params?: {
   if (params?.difficulty) qs.set('difficulty', params.difficulty);
   if (params?.status) qs.set('status', params.status);
   const query = qs.toString() ? `?${qs}` : '';
-  return apiFetch(`${API_BASE}/bounties${query}`);
-}
-
-/** GET /api/v1/bounties/:id */
-export async function fetchBounty(id: string): Promise<Bounty> {
-  return apiFetch(`${API_BASE}/bounties/${id}`);
-}
-
-/** GET /api/v1/freelancers — optionally filter by discipline. */
-export async function fetchFreelancers(params?: {
-  discipline?: string;
-}): Promise<{ freelancers: unknown[]; total: number }> {
-  const qs = new URLSearchParams();
-  if (params?.discipline) qs.set('discipline', params.discipline);
-  const query = qs.toString() ? `?${qs}` : '';
-  return apiFetch(`${API_BASE}/freelancers${query}`);
-}
-
-/** GET /api/v1/freelancers/:address */
-export async function fetchFreelancer(address: string): Promise<unknown> {
-  return apiFetch(`${API_BASE}/freelancers/${address}`);
-}
-
-/** POST /api/v1/reviews — submit a review after bounty completion. */
-export async function submitReview(
-  data: ReviewSubmission,
-): Promise<{ reviewId: string }> {
-  return apiFetch(`${API_BASE}/reviews`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-}
-
-/** POST /api/v1/escrow/transaction — submit a Stellar escrow transaction via the backend SDK. */
-export async function submitEscrowTransaction(
-  data: EscrowTransactionRequest,
-): Promise<EscrowTransactionResponse> {
-  return apiFetch(`${API_BASE}/escrow/transaction`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-}
-
-/** POST /api/v1/escrow/:id/release — release escrowed funds to payee. */
-export async function releaseEscrow(
-  escrowId: string,
-  authorizerAddress: string,
-): Promise<EscrowTransactionResponse> {
-  return apiFetch(`${API_BASE}/escrow/${escrowId}/release`, {
-    method: 'POST',
-    body: JSON.stringify({ authorizerAddress }),
-  });
-}
-
-// ── Webhook types ─────────────────────────────────────────────────────────────
-
-export type WebhookEventType =
-  | 'payment_succeeded'
-  | 'payment_failed'
-  | 'payment_refunded'
-  | 'dispute_opened'
-  | 'dispute_resolved';
-
-export interface WebhookPayload {
-  event_type: WebhookEventType;
-  escrow_id: string;
-  amount: number;
-  timestamp: string;
-  provider_event_id: string;
-}
-
-export interface WebhookAck {
-  received: boolean;
-  escrow_id: string;
-  action_taken: string;
-}
-
-/**
- * POST /api/v1/webhooks/payment — forward an external payment event to the
- * backend webhook handler. Primarily used in server-side code or tests;
- * the real webhook endpoint is called directly by the payment provider.
- */
-export async function forwardPaymentWebhook(
-  payload: WebhookPayload,
-  signature: string,
-): Promise<WebhookAck> {
-  return apiFetch(`${API_BASE}/webhooks/payment`, {
-    method: 'POST',
-    headers: { 'X-Webhook-Signature': signature },
-    body: JSON.stringify(payload),
-  });
+  return dedupedFetch(`${API_BASE}/bounties${query}`);
 }

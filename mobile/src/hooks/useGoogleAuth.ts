@@ -7,6 +7,11 @@
  * sign-in uses, so a creator who signs up on web and later opens the
  * mobile app lands on the same account.
  *
+ * The endpoint now also issues a short-lived access token (15 min) and a
+ * 30-day refresh token. Both are persisted in SecureStore so the rest of
+ * the app can attach the access token as a Bearer credential on protected
+ * API calls, and refresh it via /api/auth/mobile/refresh when it expires.
+ *
  * NOTE: this hits the Next.js app (Prisma/NextAuth's User table), which is
  * a *different* backend than the rest of this file's siblings talk to —
  * ApiClient.ts's bounty/creator/review endpoints go to the separate Rust
@@ -25,18 +30,20 @@
  * at all. Once this hook is wired into a screen, the same test-mode-flag
  * pattern used in useWalletAuth.ts (EXPO_PUBLIC_E2E_TEST_MODE) is the
  * straightforward way to add a Maestro flow for it without needing a real
- * Google consent screen in CI. The returned user record also isn't yet a
- * session token the rest of the app can use for authenticated calls — see
- * the TODO in the endpoint.
+ * Google consent screen in CI.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
+import * as SecureStore from 'expo-secure-store';
 
 WebBrowser.maybeCompleteAuthSession();
 
 const WEB_API_BASE = process.env.EXPO_PUBLIC_WEB_API_URL ?? 'http://localhost:3000';
+
+const ACCESS_TOKEN_KEY = 'tamgora.mobile.accessToken';
+const REFRESH_TOKEN_KEY = 'tamgora.mobile.refreshToken';
 
 export interface GoogleAuthUser {
   id: string;
@@ -45,6 +52,13 @@ export interface GoogleAuthUser {
   role: string;
   walletAddress: string | null;
   onboardingCompleted: boolean;
+}
+
+export interface GoogleAuthSession {
+  user: GoogleAuthUser;
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresAt: string;
 }
 
 export type GoogleAuthStatus = 'idle' | 'requesting' | 'verifying' | 'success' | 'error';
@@ -74,7 +88,10 @@ export function useGoogleAuth() {
         setStatus('error');
         return;
       }
-      setUser(body as GoogleAuthUser);
+      const session = body as GoogleAuthSession;
+      await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, session.accessToken);
+      await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, session.refreshToken);
+      setUser(session.user);
       setStatus('success');
     } catch {
       setError('Could not reach the server. Check your connection and try again.');
@@ -97,8 +114,28 @@ export function useGoogleAuth() {
     promptAsync();
   }, [promptAsync]);
 
+  const signOut = useCallback(async () => {
+    const refreshToken = await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
+    if (refreshToken) {
+      try {
+        await fetch(`${WEB_API_BASE}/api/auth/mobile/logout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+      } catch {
+        // Best-effort revocation; local tokens are cleared regardless.
+      }
+    }
+    await SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY);
+    await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+    setUser(null);
+    setStatus('idle');
+  }, []);
+
   return {
     signIn,
+    signOut,
     status,
     user,
     error,

@@ -1,55 +1,64 @@
 import DOMPurify from 'isomorphic-dompurify';
-import { isAllowedEmbedSrc } from './video-embed';
-
-let hooksInstalled = false;
-
-function installHooks() {
-  if (hooksInstalled) return;
-  hooksInstalled = true;
-
-  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-    if (node.nodeName === 'IFRAME') {
-      // Only the YouTube / Loom embed URLs produced by the editor survive.
-      if (!isAllowedEmbedSrc(node.getAttribute('src'))) {
-        node.parentNode?.removeChild(node);
-        return;
-      }
-      node.setAttribute('loading', 'lazy');
-      node.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-    }
-
-    if (node.nodeName === 'A' && node.getAttribute('target')) {
-      node.setAttribute('rel', 'noopener noreferrer');
-    }
-  });
-}
 
 /**
- * Sanitize HTML produced by (or destined for) the rich-text editor.
- *
- * Runs on both the client (before `onChange`) and the server (before the
- * project is persisted), so stored HTML never contains scripts, inline event
- * handlers, or iframes pointing anywhere except YouTube / Loom embeds.
+ * Strict allowlist for rich text content.
+ * Deny-by-default: anything not listed here is stripped.
  */
-export function sanitizeRichText(html: string): string {
-  installHooks();
-  return DOMPurify.sanitize(html, {
-    ADD_TAGS: ['iframe'],
-    ADD_ATTR: ['allowfullscreen', 'frameborder', 'target', 'title', 'loading', 'referrerpolicy'],
-  });
-}
+const ALLOWED_TAGS = [
+  'p',
+  'a',
+  'strong',
+  'em',
+  'ul',
+  'ol',
+  'li',
+  'code',
+  'pre',
+  'h2',
+  'h3',
+  'h4',
+];
 
-/** Visible text of an HTML fragment; used to reject "empty" editor output. */
-export function richTextToPlainText(html: string): string {
-  const fragment = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: [],
-    KEEP_CONTENT: true,
-    RETURN_DOM_FRAGMENT: true,
-  });
-  return (fragment.textContent ?? '').trim();
-}
+const ALLOWED_ATTR = ['href', 'target', 'rel'];
 
-/** True when the HTML has visible text or at least one video embed. */
-export function hasRichTextContent(html: string): boolean {
-  return richTextToPlainText(html).length > 0 || html.includes('data-video-embed');
+/**
+ * Sanitize untrusted rich text HTML.
+ *
+ * - Strips scripts, event handlers, and unknown tags/attributes.
+ * - Blocks `javascript:` and `data:` URLs.
+ * - Forces `rel="noopener noreferrer"` and `target="_blank"` on links.
+ *
+ * Safe to call on both the server (write path) and the client (render path).
+ */
+export function sanitizeRichText(html: string | null | undefined): string {
+  if (!html) return '';
+
+  const clean = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    ALLOW_DATA_ATTR: false,
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'svg', 'math'],
+    FORBID_ATTR: ['style', 'srcset', 'formaction'],
+  });
+
+  // Harden links: force safe rel/target and drop unsafe protocols.
+  return clean.replace(/<a\b([^>]*)>/gi, (_match, attrs: string) => {
+    const hrefMatch = /\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+    const href = hrefMatch
+      ? (hrefMatch[2] ?? hrefMatch[3] ?? hrefMatch[4] ?? '').trim()
+      : '';
+
+    const lower = href.toLowerCase().replace(/\s+/g, '');
+    const isUnsafe =
+      lower.startsWith('javascript:') ||
+      lower.startsWith('data:') ||
+      lower.startsWith('vbscript:');
+
+    if (!href || isUnsafe) {
+      // Drop the href entirely; keep the anchor text.
+      return '<a>';
+    }
+
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">`;
+  });
 }
