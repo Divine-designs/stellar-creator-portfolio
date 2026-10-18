@@ -6,6 +6,11 @@
  * back-off + jitter (BASE_DELAY * 2^attempt + rand, capped at MAX_DELAY).
  * After MAX_RETRIES failures the operation is moved to the dead-letter queue
  * so the user can be notified and decide whether to retry or discard.
+ *
+ * Conflict policy (see #1625): the server is authoritative. `/api/sync/push`
+ * validates every record against a per-entity schema and enforces ownership,
+ * rejecting unknown entity types and cross-user writes (deny-by-default).
+ * Rejected operations are dead-lettered here rather than retried forever.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -16,6 +21,27 @@ const DLQ_KEY     = '@stellar/offline_dlq';
 const MAX_RETRIES = 5;
 const BASE_DELAY  = 1000;
 const MAX_DELAY   = 30_000;
+
+/**
+ * Entity types the sync endpoint accepts. Anything else is rejected
+ * client-side before it is ever enqueued (deny-by-default).
+ */
+export const ALLOWED_ENTITY_TYPES = [
+  'profile',
+  'portfolio',
+  'project',
+  'testimonial',
+  'notification',
+] as const;
+
+export type AllowedEntityType = (typeof ALLOWED_ENTITY_TYPES)[number];
+
+function isAllowedEntityType(value: unknown): value is AllowedEntityType {
+  return (
+    typeof value === 'string' &&
+    (ALLOWED_ENTITY_TYPES as readonly string[]).includes(value)
+  );
+}
 
 // ─── Back-off helper ──────────────────────────────────────────────────────────
 
@@ -55,10 +81,19 @@ async function writeDLQ(queue: QueuedOperation[]): Promise<void> {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/** Enqueue a mutation to be replayed when online. */
+/**
+ * Enqueue a mutation to be replayed when online.
+ *
+ * Rejects unknown entity types so the offline queue can never push a record
+ * the server would refuse (deny-by-default). Returns `false` when rejected.
+ */
 export async function enqueue(
   op: Omit<QueuedOperation, 'id' | 'retries' | 'createdAt' | 'nextRetryAt'>,
-): Promise<void> {
+): Promise<boolean> {
+  if (!isAllowedEntityType(op.entityType)) {
+    return false;
+  }
+
   const queue = await readQueue();
   const entry: QueuedOperation = {
     ...op,
@@ -69,6 +104,7 @@ export async function enqueue(
   };
   queue.push(entry);
   await writeQueue(queue);
+  return true;
 }
 
 /** Return all pending operations (including those not yet ready to retry). */
@@ -116,6 +152,22 @@ export async function markRetry(id: string): Promise<boolean> {
   );
   await writeQueue(updated);
   return false;
+}
+
+/**
+ * Move an operation to the dead-letter queue immediately.
+ *
+ * Used when the server rejects a push (e.g. cross-user write or unknown
+ * entity type) — retrying would never succeed, so it is not retried.
+ */
+export async function deadLetter(id: string): Promise<void> {
+  const queue = await readQueue();
+  const op = queue.find((o) => o.id === id);
+  if (!op) return;
+  const dlq = await readDLQ();
+  dlq.push(op);
+  await writeDLQ(dlq);
+  await writeQueue(queue.filter((o) => o.id !== id));
 }
 
 /** Return all dead-lettered operations. */
