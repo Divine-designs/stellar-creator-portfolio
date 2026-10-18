@@ -245,3 +245,52 @@ describe('Error Tracking Hooks', () => {
     expect(typeof useAddBreadcrumb).toBe('function');
   });
 });
+
+describe('Error Log Flood Guard', () => {
+  const MAX_PAYLOAD_BYTES = 8 * 1024;
+
+  it('should reject payloads larger than 8KB', async () => {
+    const { isPayloadWithinLimit } = await import('@/lib/error-log-guard');
+
+    const small = JSON.stringify({ message: 'boom' });
+    const huge = JSON.stringify({ message: 'x'.repeat(MAX_PAYLOAD_BYTES + 1) });
+
+    expect(isPayloadWithinLimit(small)).toBe(true);
+    expect(isPayloadWithinLimit(huge)).toBe(false);
+  });
+
+  it('should throttle a flood of requests from the same client', async () => {
+    const { createRateLimiter } = await import('@/lib/error-log-guard');
+
+    const limiter = createRateLimiter({ limit: 5, windowMs: 60_000 });
+    const key = 'flood-client';
+
+    const results = Array.from({ length: 20 }, () => limiter.check(key));
+    const allowed = results.filter((r) => r.allowed).length;
+
+    expect(allowed).toBe(5);
+    expect(results[results.length - 1].allowed).toBe(false);
+  });
+
+  it('should dedupe identical stack hashes within a minute', async () => {
+    const { createStackDeduper } = await import('@/lib/error-log-guard');
+
+    const deduper = createStackDeduper({ windowMs: 60_000 });
+    const stack = 'Error: boom\n    at foo (bar.ts:1:1)';
+
+    expect(deduper.shouldLog(stack)).toBe(true);
+    expect(deduper.shouldLog(stack)).toBe(false);
+  });
+
+  it('should redact emails, tokens and Stellar secrets', async () => {
+    const { redactSensitive } = await import('@/lib/error-log-guard');
+
+    const secret = 'S' + 'A'.repeat(55);
+    const input = `user@example.com token=abc123 secret=${secret}`;
+    const output = redactSensitive(input);
+
+    expect(output).not.toContain('user@example.com');
+    expect(output).not.toContain('abc123');
+    expect(output).not.toContain(secret);
+  });
+});

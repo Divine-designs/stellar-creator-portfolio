@@ -1,53 +1,67 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
-import { checkRate, clientIp } from '@/server/api/rate-limit';
+import { checkRate, resetRate } from '@/server/api/rate-limit';
 
-export const runtime = 'nodejs';
+const MAX_PAYLOAD_BYTES = 8 * 1024;
+const RATE_LIMIT = 30;
+const RATE_WINDOW_MS = 60_000;
+const SAMPLE_RATE = 0.1;
 
-/** Reports per client IP per minute; a crash loop must not flood the logs. */
-const REPORTS_PER_MINUTE = 30;
-const MAX_BODY_BYTES = 32 * 1024;
+const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+const STELLAR_SECRET_RE = /S[A-Z2-7]{55}/g;
+const TOKEN_RE = /\b(?:bearer\s+)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gi;
 
-const errorReportSchema = z.object({
-  id: z.string().max(100),
-  timestamp: z.string().max(40),
-  level: z.enum(['error', 'warning', 'info']),
-  message: z.string().max(2_000),
-  stack: z.string().max(10_000).optional(),
-  context: z
-    .object({
-      sessionId: z.string().max(100).optional(),
-      component: z.string().max(200).optional(),
-      action: z.string().max(200).optional(),
-      metadata: z.record(z.unknown()).optional(),
-    })
-    .passthrough()
-    .default({}),
-  url: z.string().max(2_000).optional(),
-  userAgent: z.string().max(500).optional(),
-  environment: z.string().max(50).optional(),
-});
+function redact(value: string): string {
+  return value
+    .replace(STELLAR_SECRET_RE, '[REDACTED_STELLAR_SECRET]')
+    .replace(TOKEN_RE, '[REDACTED_TOKEN]')
+    .replace(EMAIL_RE, '[REDACTED_EMAIL]');
+}
 
-/**
- * POST /api/errors/log
- *
- * Receives client-side error reports from lib/error-tracking.ts and writes
- * them to the server log as one JSON line each, where the hosting
- * platform's log drain picks them up. Reports are size-limited, rate-limited
- * per IP, and stripped of the user's email before logging.
- */
+function clientIp(req: NextRequest): string {
+  const fwd = req.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0].trim();
+  return req.headers.get('x-real-ip') ?? 'unknown';
+}
+
+function hashStack(stack: string): string {
+  let h = 0;
+  for (let i = 0; i < stack.length; i++) {
+    h = (h * 31 + stack.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
+const seenStacks = new Map<string, number>();
+
+function shouldSample(stackKey: string): boolean {
+  const now = Date.now();
+  const last = seenStacks.get(stackKey);
+  if (last && now - last < RATE_WINDOW_MS) {
+    return Math.random() < SAMPLE_RATE;
+  }
+  seenStacks.set(stackKey, now);
+  if (seenStacks.size > 1000) {
+    for (const [k, t] of seenStacks) {
+      if (now - t >= RATE_WINDOW_MS) seenStacks.delete(k);
+    }
+  }
+  return true;
+}
+
 export async function POST(req: NextRequest) {
-  const limit = checkRate(`error-report:${clientIp(req.headers)}`, REPORTS_PER_MINUTE, 60);
-  if (!limit.allowed) {
+  const ip = clientIp(req);
+  const rateKey = `error-report:${ip}`;
+  const rate = checkRate(rateKey, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rate.allowed) {
     return NextResponse.json(
-      { error: 'Too many error reports' },
-      { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } },
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(rate.retryAfterMs / 1000)) } },
     );
   }
 
   const raw = await req.text();
-  if (raw.length > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: 'Report too large' }, { status: 413 });
+  if (Buffer.byteLength(raw, 'utf8') > MAX_PAYLOAD_BYTES) {
+    return NextResponse.json({ error: 'Payload too large' }, { status: 413 });
   }
 
   let body: unknown;
@@ -57,24 +71,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const parsed = errorReportSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: 'Invalid error report' }, { status: 400 });
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid report' }, { status: 400 });
   }
 
-  // Drop contact details the client may have attached; the user id is
-  // enough to correlate a report.
-  const context: Record<string, unknown> = { ...parsed.data.context };
-  delete context.userEmail;
+  const report = body as Record<string, unknown>;
+  if (typeof report.id !== 'string' || typeof report.level !== 'string' || typeof report.message !== 'string') {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
 
-  console.error(
-    JSON.stringify({
-      source: 'client-error-report',
-      ...parsed.data,
-      context,
-      receivedAt: new Date().toISOString(),
-    }),
-  );
+  const stack = typeof report.stack === 'string' ? report.stack : '';
+  const stackKey = hashStack(stack || report.message);
+  if (!shouldSample(stackKey)) {
+    return NextResponse.json({ ok: true, sampled: false }, { status: 202 });
+  }
 
-  return NextResponse.json({ received: true }, { status: 202 });
+  const safe = {
+    id: report.id,
+    level: report.level,
+    message: redact(report.message),
+    stack: stack ? redact(stack) : undefined,
+    context: report.context ? redact(JSON.stringify(report.context)) : undefined,
+  };
+
+  console.error(`[client-error] ${JSON.stringify(safe)}`);
+  return NextResponse.json({ ok: true }, { status: 202 });
 }

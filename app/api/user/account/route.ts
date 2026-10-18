@@ -6,14 +6,15 @@ import { prisma } from '@/lib/prisma';
  * DELETE /api/user/account
  *
  * Issue #811 — GDPR/CCPA right to erasure.
+ * Issue #1540 — cascade or anonymise correctly per model.
  *
- * Anonymisation strategy (GDPR recital 65 — financial records retained):
- *  1. Replace name/email PII with [deleted] placeholders.
- *  2. Delete avatar, bio, social links.
- *  3. Retain Bounty and BountyApplication rows for financial audit integrity.
- *  4. Delete sessions and accounts (OAuth tokens) → revokes all active logins.
- *  5. Mark the user row so it can no longer be used to log in.
- *  6. Write a final AuditLog entry.
+ * Per-model retention policy:
+ *  - ANONYMISE: User (name/email/avatar), CreatorProfile, ClientProfile,
+ *    reviews (keep text, attribute to 'Deleted user'), payments/escrow
+ *    (retained for accounting, user reference anonymised).
+ *  - DELETE: sessions, OAuth accounts, API keys, push subscriptions,
+ *    notifications, messages authored by the user.
+ *  - RETAIN: Bounty and BountyApplication rows for financial audit integrity.
  *
  * Stellar keypair: on-chain funds are NOT touched. Platform-side keypair
  * metadata is cleared from the profile record.
@@ -36,20 +37,30 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 });
   }
 
-  const deletedEmail = `[deleted]-${user.id}@stellar.invalid`;
+  const deletedEmail = `deleted+${user.id}@invalid`;
   const ip = req.headers.get('x-forwarded-for') ?? 'unknown';
 
   await prisma.$transaction(async (tx) => {
-    // 1. Revoke all active sessions and OAuth tokens
+    // 1. DELETE — revoke all active sessions and OAuth tokens
     await tx.session.deleteMany({ where: { userId: user.id } });
     await tx.account.deleteMany({ where: { userId: user.id } });
 
-    // 2. Anonymise creator profile PII (retain record for audit trail)
+    // 2. DELETE — API keys and push subscriptions (no retention need)
+    await tx.apiKey.deleteMany({ where: { userId: user.id } });
+    await tx.pushSubscription.deleteMany({ where: { userId: user.id } });
+
+    // 3. DELETE — notifications addressed to the user
+    await tx.notification.deleteMany({ where: { userId: user.id } });
+
+    // 4. DELETE — messages authored by the user (policy allows removal)
+    await tx.message.deleteMany({ where: { senderId: user.id } });
+
+    // 5. ANONYMISE — creator profile PII (retain record for audit trail)
     if (user.creatorProfile) {
       await tx.creatorProfile.update({
         where: { userId: user.id },
         data: {
-          displayName: '[deleted]',
+          displayName: 'Deleted user',
           bio: null,
           avatar: null,
           githubUrl: null,
@@ -60,12 +71,12 @@ export async function DELETE(req: NextRequest) {
       });
     }
 
-    // 3. Anonymise client profile PII
+    // 6. ANONYMISE — client profile PII
     if (user.clientProfile) {
       await tx.clientProfile.update({
         where: { userId: user.id },
         data: {
-          companyName: '[deleted]',
+          companyName: 'Deleted user',
           bio: null,
           avatar: null,
           githubUrl: null,
@@ -76,11 +87,20 @@ export async function DELETE(req: NextRequest) {
       });
     }
 
-    // 4. Anonymise the user row — retains id for FK integrity on financial records
+    // 7. ANONYMISE — reviews keep text but are attributed to 'Deleted user'
+    await tx.review.updateMany({
+      where: { authorId: user.id },
+      data: { authorName: 'Deleted user' },
+    });
+
+    // 8. ANONYMISE — payments/escrow retained for accounting; user reference
+    //    anonymised via the user row below (FK integrity preserved).
+
+    // 9. ANONYMISE — the user row retains id for FK integrity on financial records
     await tx.user.update({
       where: { id: user.id },
       data: {
-        name: '[deleted]',
+        name: 'Deleted user',
         email: deletedEmail,
         password: null,
         image: null,
@@ -89,7 +109,7 @@ export async function DELETE(req: NextRequest) {
       },
     });
 
-    // 5. Audit log — immutable compliance record
+    // 10. Audit log — immutable compliance record
     await tx.auditLog.create({
       data: {
         userId: user.id,
@@ -100,7 +120,7 @@ export async function DELETE(req: NextRequest) {
         payload: {
           completedAt: new Date().toISOString(),
           ip,
-          retainedRecords: ['Bounty', 'BountyApplication'],
+          retainedRecords: ['Bounty', 'BountyApplication', 'Payment', 'Escrow'],
           note: 'PII anonymised per GDPR recital 65; financial records retained for legal compliance.',
         },
       },
