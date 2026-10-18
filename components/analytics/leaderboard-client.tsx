@@ -19,13 +19,35 @@ export interface CreatorLeaderboardItem {
   skills: string[];
   rating: number;
   completedProjects: number;
-  earnings: number;
+  /**
+   * Server-computed earnings bucket label (e.g. "<1k", "1k–5k", "5k–10k", "10k+").
+   * Exact earnings are never sent to the client; the server buckets them.
+   */
+  earningsBucket: string;
+  /**
+   * Server-computed sort rank for earnings. Used only for ordering the
+   * "Top Earners" tab so the client never needs the exact amount.
+   */
+  earningsRank: number;
   createdAt: string;
 }
 
 interface LeaderboardClientProps {
   creators: CreatorLeaderboardItem[];
   currentUserId: string | null;
+}
+
+/** Human-readable label for a server-provided earnings bucket. */
+const EARNINGS_BUCKET_LABELS: Record<string, string> = {
+  '<1k': 'Under $1,000 earned',
+  '1k–5k': '$1,000 - $5,000 earned',
+  '5k–10k': '$5,000 - $10,000 earned',
+  '10k+': '$10,000+ earned',
+};
+
+function formatEarningsBucket(bucket: string | null | undefined): string {
+  if (!bucket) return 'Earnings unavailable';
+  return EARNINGS_BUCKET_LABELS[bucket] ?? 'Earnings unavailable';
 }
 
 export function LeaderboardClient({ creators, currentUserId }: LeaderboardClientProps) {
@@ -59,16 +81,6 @@ export function LeaderboardClient({ creators, currentUserId }: LeaderboardClient
     [router, pathname, searchParams],
   );
 
-  // Format earnings as range/obfuscated strings (e.g., "$10,XXX+ earned")
-  const formatEarnings = (amount: number) => {
-    if (amount <= 0) return '$0 earned';
-    if (amount < 1000) return 'Under $1,000 earned';
-    if (amount < 5000) return '$1,000 - $5,000 earned';
-    if (amount < 10000) return '$5,000 - $10,000 earned';
-    const thousands = Math.floor(amount / 1000);
-    return `$${thousands},XXX+ earned`;
-  };
-
   // Get unique disciplines
   const disciplines = useMemo(() => {
     const list = new Set(creators.map(c => c.discipline).filter(Boolean) as string[]);
@@ -84,8 +96,8 @@ export function LeaderboardClient({ creators, currentUserId }: LeaderboardClient
     }
     disciplineList.sort((a, b) => b.rating - a.rating || b.completedProjects - a.completedProjects);
 
-    // 2. Earnings List (sorted by earnings desc)
-    const earningsList = [...creators].sort((a, b) => b.earnings - a.earnings);
+    // 2. Earnings List (sorted by server-provided earnings rank)
+    const earningsList = [...creators].sort((a, b) => a.earningsRank - b.earningsRank);
 
     // 3. Rising Stars List (created within last 90 days, sorted by rating desc)
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
@@ -184,119 +196,81 @@ export function LeaderboardClient({ creators, currentUserId }: LeaderboardClient
               </TableRow>
             </TableHeader>
             <TableBody>
-              {top20.map((creator, idx) => {
-                const rank = idx + 1;
-                const isCurrentUser = currentUserId === creator.userId;
-                return (
-                  <TableRow
-                    key={creator.id}
-                    className={`transition-colors hover:bg-muted/10 ${
-                      isCurrentUser ? 'bg-indigo-500/5 hover:bg-indigo-500/10 font-medium' : ''
-                    }`}
-                  >
-                    <TableCell className="text-center align-middle">{getRankBadge(rank)}</TableCell>
-                    <TableCell className="align-middle">
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-9 w-9 border border-border">
-                          <AvatarImage src={creator.avatar || ''} alt={creator.displayName} />
-                          <AvatarFallback className="bg-indigo-500/10 text-indigo-400">
-                            {getAvatarInitials(creator.displayName)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex flex-col min-w-0">
-                          <span className="font-semibold text-foreground truncate flex items-center gap-1.5">
-                            {creator.displayName}
-                            {isCurrentUser && (
-                              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                                You
-                              </Badge>
-                            )}
-                          </span>
-                          <div className="flex gap-1 flex-wrap mt-0.5">
-                            {creator.skills.slice(0, 2).map(skill => (
-                              <Badge key={skill} variant="outline" className="text-[10px] text-muted-foreground border-border/50 py-0 px-1">
-                                {skill}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="align-middle capitalize">{creator.discipline || '—'}</TableCell>
-                    <TableCell className="text-center align-middle font-mono text-sm">
-                      {creator.completedProjects}
-                    </TableCell>
-                    <TableCell className="text-center align-middle">
-                      <div className="flex items-center justify-center gap-1">
-                        <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
-                        <span className="font-mono text-sm font-semibold">{(creator.rating / 100).toFixed(1)}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right align-middle font-mono text-sm text-indigo-400">
-                      {formatEarnings(creator.earnings)}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-
-              {top20.length === 0 && (
+              {top20.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12 text-muted-foreground text-sm">
-                    No creators found on the leaderboard list.
+                  <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
+                    No creators to display yet.
                   </TableCell>
                 </TableRow>
+              ) : (
+                top20.map((creator, idx) => {
+                  const rank = idx + 1;
+                  const isCurrentUser = currentUserId === creator.userId;
+                  return (
+                    <TableRow
+                      key={creator.id}
+                      className={isCurrentUser ? 'bg-indigo-500/5' : undefined}
+                    >
+                      <TableCell className="text-center">{getRankBadge(rank)}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-8 w-8">
+                            {creator.avatar ? (
+                              <AvatarImage src={creator.avatar} alt={creator.displayName} />
+                            ) : null}
+                            <AvatarFallback>{getAvatarInitials(creator.displayName)}</AvatarFallback>
+                          </Avatar>
+                          <div className="flex flex-col">
+                            <span className="font-medium text-sm">{creator.displayName}</span>
+                            {creator.skills.length > 0 && (
+                              <span className="text-xs text-muted-foreground">
+                                {creator.skills.slice(0, 3).join(' · ')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="capitalize text-sm text-muted-foreground">
+                        {creator.discipline ?? '—'}
+                      </TableCell>
+                      <TableCell className="text-center text-sm">{creator.completedProjects}</TableCell>
+                      <TableCell className="text-center text-sm">
+                        <span className="inline-flex items-center gap-1">
+                          <Star className="h-3.5 w-3.5 text-amber-400 fill-amber-400" />
+                          {creator.rating.toFixed(1)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right text-sm text-muted-foreground">
+                        {formatEarningsBucket(creator.earningsBucket)}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
-
-          {/* Locked/pinned row for current user if outside Top 20 */}
-          {ownRankInfo && !ownRankInfo.inTop20 && (
-            <div className="border-t-2 border-dashed border-border/80 bg-indigo-950/20 backdrop-blur px-6 py-4 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-4 min-w-0">
-                <span className="text-indigo-400 font-bold font-mono text-sm shrink-0 w-8 text-center">
-                  #{ownRankInfo.rank}
-                </span>
-                <div className="flex items-center gap-3 min-w-0">
-                  <Avatar className="h-9 w-9 border border-indigo-500/20">
-                    <AvatarImage src={ownRankInfo.creator.avatar || ''} alt={ownRankInfo.creator.displayName} />
-                    <AvatarFallback className="bg-indigo-500/20 text-indigo-300">
-                      {getAvatarInitials(ownRankInfo.creator.displayName)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0">
-                    <p className="font-semibold text-indigo-300 flex items-center gap-1.5">
-                      {ownRankInfo.creator.displayName}
-                      <Badge variant="outline" className="text-[10px] text-indigo-300 border-indigo-400/20 bg-indigo-500/10">
-                        You
-                      </Badge>
-                    </p>
-                    <p className="text-xs text-muted-foreground capitalize">
-                      {ownRankInfo.creator.discipline || '—'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-6 shrink-0 font-mono text-sm">
-                <div className="hidden sm:block text-center">
-                  <span className="text-muted-foreground text-xs block">Projects</span>
-                  <span className="text-foreground">{ownRankInfo.creator.completedProjects}</span>
-                </div>
-                <div className="text-center">
-                  <span className="text-muted-foreground text-xs block">Rating</span>
-                  <div className="flex items-center gap-0.5 justify-center">
-                    <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
-                    <span>{(ownRankInfo.creator.rating / 100).toFixed(1)}</span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span className="text-muted-foreground text-xs block">Earnings</span>
-                  <span className="text-indigo-300 font-semibold">{formatEarnings(ownRankInfo.creator.earnings)}</span>
-                </div>
-              </div>
-            </div>
-          )}
         </CardContent>
       </Card>
+
+      {ownRankInfo && !ownRankInfo.inTop20 && (
+        <Card className="bg-indigo-500/5 border border-indigo-500/30">
+          <CardContent className="flex items-center justify-between py-4">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-sm text-muted-foreground">#{ownRankInfo.rank}</span>
+              <Avatar className="h-8 w-8">
+                {ownRankInfo.creator.avatar ? (
+                  <AvatarImage src={ownRankInfo.creator.avatar} alt={ownRankInfo.creator.displayName} />
+                ) : null}
+                <AvatarFallback>{getAvatarInitials(ownRankInfo.creator.displayName)}</AvatarFallback>
+              </Avatar>
+              <span className="font-medium text-sm">You</span>
+            </div>
+            <span className="text-sm text-muted-foreground">
+              {formatEarningsBucket(ownRankInfo.creator.earningsBucket)}
+            </span>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

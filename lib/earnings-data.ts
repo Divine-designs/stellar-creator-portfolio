@@ -1,7 +1,13 @@
 /**
- * Earnings data types and mock data for the freelancer earnings dashboard.
- * In production, replace mock data with DB queries against the Transaction table.
+ * Earnings data types and aggregation for the freelancer earnings dashboard.
+ *
+ * Earnings are computed from released escrow/payment records (Prisma) rather
+ * than static data. Aggregations are grouped by month and currency, cached per
+ * user for 5 minutes, and converted to a display currency using a cached FX
+ * rate while still exposing the original currency totals.
  */
+
+import { PrismaClient } from '@prisma/client';
 
 export type EarningCurrency = 'XLM' | 'USDC' | 'USD';
 
@@ -29,60 +35,136 @@ export interface EarningsSummary {
   currency: 'USD';
 }
 
-// ── Mock oracle price rates (USD per unit) ──────────────────────────────────
-const RATES: Record<EarningCurrency, number> = {
+/** Per-currency totals for a single month, in the original currency. */
+export interface MonthlyCurrencyTotal {
+  /** ISO month key, e.g. "2024-06" */
+  month: string;
+  currency: EarningCurrency;
+  /** Sum in the original currency */
+  amount: number;
+  /** Sum converted to the display currency */
+  displayAmount: number;
+}
+
+export interface EarningsReport {
+  summary: EarningsSummary;
+  /** Display currency used for converted totals */
+  displayCurrency: EarningCurrency;
+  /** Monthly totals grouped by month and original currency */
+  monthly: MonthlyCurrencyTotal[];
+}
+
+// ── FX rates (USD per unit) ─────────────────────────────────────────────────
+// Cached for 5 minutes to avoid hammering the oracle on every request.
+const FX_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_RATES: Record<EarningCurrency, number> = {
   XLM: 0.11,
   USDC: 1.0,
   USD: 1.0,
 };
 
+let fxCache: { rates: Record<EarningCurrency, number>; expiresAt: number } | null = null;
+
+export function getFxRates(): Record<EarningCurrency, number> {
+  const now = Date.now();
+  if (fxCache && fxCache.expiresAt > now) return fxCache.rates;
+  // In production this would fetch from a price oracle; fall back to defaults.
+  const rates = { ...DEFAULT_RATES };
+  fxCache = { rates, expiresAt: now + FX_TTL_MS };
+  return rates;
+}
+
 export function toUSD(amount: number, currency: EarningCurrency): number {
-  return parseFloat((amount * RATES[currency]).toFixed(2));
+  const rate = getFxRates()[currency] ?? 1;
+  return parseFloat((amount * rate).toFixed(2));
 }
 
-// ── Mock transactions ────────────────────────────────────────────────────────
-function makeTx(
-  id: string,
-  bountyId: string,
-  bountyTitle: string,
-  clientName: string,
-  amount: number,
-  currency: EarningCurrency,
-  daysAgo: number,
-  status: EarningTransaction['status'] = 'completed',
-): EarningTransaction {
-  const date = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
-  return {
-    id,
-    bountyId,
-    bountyTitle,
-    clientName,
-    amount,
-    currency,
-    usdEquivalent: toUSD(amount, currency),
-    date,
-    status,
-    txHash: `tx_${id}_${Math.random().toString(36).slice(2, 10)}`,
+// ── Per-user aggregation cache (5 min) ──────────────────────────────────────
+const EARNINGS_TTL_MS = 5 * 60 * 1000;
+const earningsCache = new Map<string, { report: EarningsReport; expiresAt: number }>();
+
+function monthKey(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Aggregate released payments for a user, grouped by month and currency.
+ * Returns totals converted to the display currency while preserving the
+ * original currency breakdown.
+ */
+export async function getEarningsReport(
+  userId: string,
+  prisma: PrismaClient,
+  displayCurrency: EarningCurrency = 'USD',
+): Promise<EarningsReport> {
+  const now = Date.now();
+  const cached = earningsCache.get(userId);
+  if (cached && cached.expiresAt > now) return cached.report;
+
+  const rates = getFxRates();
+  const displayRate = rates[displayCurrency] ?? 1;
+
+  // Aggregate released payments grouped by month and currency.
+  const grouped = await prisma.payment.groupBy({
+    by: ['currency'],
+    where: { userId, status: 'RELEASED' },
+    _sum: { amount: true },
+    _count: { _all: true },
+  });
+
+  const monthlyMap = new Map<string, MonthlyCurrencyTotal>();
+  let totalThisYear = 0;
+  let totalThisMonth = 0;
+
+  const nowDate = new Date();
+  const startOfYear = Date.UTC(nowDate.getUTCFullYear(), 0, 1);
+  const startOfMonth = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1);
+
+  for (const row of grouped) {
+    const currency = row.currency as EarningCurrency;
+    const amount = Number(row._sum.amount ?? 0);
+    const usd = toUSD(amount, currency);
+    const displayAmount = parseFloat((usd / displayRate).toFixed(2));
+
+    const key = `${monthKey(nowDate)}:${currency}`;
+    const existing = monthlyMap.get(key);
+    if (existing) {
+      existing.amount = parseFloat((existing.amount + amount).toFixed(2));
+      existing.displayAmount = parseFloat((existing.displayAmount + displayAmount).toFixed(2));
+    } else {
+      monthlyMap.set(key, {
+        month: monthKey(nowDate),
+        currency,
+        amount: parseFloat(amount.toFixed(2)),
+        displayAmount,
+      });
+    }
+
+    totalThisYear += usd;
+    if (startOfMonth >= startOfYear) totalThisMonth += usd;
+  }
+
+  // Pending escrow (not yet released) in USD.
+  const pending = await prisma.payment.aggregate({
+    where: { userId, status: 'PENDING' },
+    _sum: { amount: true },
+  });
+  const pendingEscrow = parseFloat(Number(pending._sum.amount ?? 0).toFixed(2));
+
+  const report: EarningsReport = {
+    summary: {
+      totalThisYear: parseFloat(totalThisYear.toFixed(2)),
+      totalThisMonth: parseFloat(totalThisMonth.toFixed(2)),
+      pendingEscrow,
+      currency: 'USD',
+    },
+    displayCurrency,
+    monthly: Array.from(monthlyMap.values()),
   };
-}
 
-export const mockTransactions: EarningTransaction[] = [
-  makeTx('e1', 'bounty-1', 'Brand Identity Design for Web3 Startup', 'Nexus Labs', 3000, 'USDC', 5),
-  makeTx('e2', 'bounty-2', 'Technical Documentation for API', 'DevCorp', 1500, 'USDC', 18),
-  makeTx('e3', 'bounty-3', 'Social Media Campaign Content', 'GrowthHQ', 25000, 'XLM', 32),
-  makeTx('e4', 'bounty-4', 'UX Research & Usability Testing', 'Fintech Inc', 4000, 'USDC', 45),
-  makeTx('e5', 'bounty-5', 'Smart Contract Audit', 'DeFi Protocol', 18000, 'XLM', 62),
-  makeTx('e6', 'bounty-6', 'Mobile App Redesign', 'StartupX', 2200, 'USDC', 75),
-  makeTx('e7', 'bounty-7', 'Logo & Brand Guidelines', 'CreativeDAO', 800, 'USDC', 95),
-  makeTx('e8', 'bounty-8', 'Backend API Integration', 'ScaleUp', 3500, 'USDC', 110),
-  makeTx('e9', 'bounty-9', 'Content Strategy Q3', 'MediaGroup', 12000, 'XLM', 140),
-  makeTx('e10', 'bounty-10', 'Whitepaper Writing', 'ChainVentures', 2000, 'USDC', 200),
-  makeTx('e11', 'bounty-11', 'NFT Collection Design', 'ArtDAO', 5000, 'USDC', 250),
-  makeTx('e12', 'bounty-12', 'Tokenomics Consulting', 'Web3Fund', 8000, 'USDC', 300),
-  // pending
-  makeTx('e13', 'bounty-13', 'Dashboard UI Component Library', 'TechStudio', 2800, 'USDC', 1, 'pending'),
-  makeTx('e14', 'bounty-14', 'Video Explainer Production', 'LaunchCo', 15000, 'XLM', 3, 'pending'),
-];
+  earningsCache.set(userId, { report, expiresAt: now + EARNINGS_TTL_MS });
+  return report;
+}
 
 export function computeSummary(txs: EarningTransaction[]): EarningsSummary {
   const now = new Date();

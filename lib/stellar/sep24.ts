@@ -68,6 +68,49 @@ export function isSuccessStatus(status: Sep24Status): boolean {
   return status === 'completed';
 }
 
+/**
+ * Human-readable instructions for a status, so the form can render a clear
+ * message instead of a raw protocol token. `pending_user_transfer_start` is
+ * the one that most needs this: the anchor is waiting on the user to send
+ * funds out of band, and without instructions the flow looks stuck.
+ */
+export function describeStatus(status: Sep24Status): string {
+  switch (status) {
+    case 'incomplete':
+      return 'The anchor needs more information to continue.';
+    case 'pending_user_transfer_start':
+      return 'Send the funds to the anchor using the instructions in the anchor window to continue.';
+    case 'pending_user_transfer_complete':
+      return 'Waiting for the anchor to confirm receipt of your funds.';
+    case 'pending_external':
+      return 'Waiting for the external payment network to confirm the transfer.';
+    case 'pending_anchor':
+      return 'The anchor is processing your transaction.';
+    case 'pending_stellar':
+      return 'Waiting for the Stellar network to confirm the transaction.';
+    case 'pending_trust':
+      return 'Add a trustline for the asset to continue.';
+    case 'pending_user':
+      return 'The anchor is waiting on you to complete a step in the anchor window.';
+    case 'completed':
+      return 'Transaction completed.';
+    case 'refunded':
+      return 'The transaction was refunded by the anchor.';
+    case 'expired':
+      return 'The transaction expired before it was completed.';
+    case 'no_market':
+      return 'The anchor has no market for this asset pair.';
+    case 'too_small':
+      return 'The amount is below the anchor\u2019s minimum.';
+    case 'too_large':
+      return 'The amount is above the anchor\u2019s maximum.';
+    case 'error':
+      return 'The anchor reported an error for this transaction.';
+    default:
+      return 'Unknown transaction status.';
+  }
+}
+
 export interface Sep24Transaction {
   id: string;
   kind: 'deposit' | 'withdrawal';
@@ -254,100 +297,48 @@ export interface PollOptions {
   id: string;
   authToken: string;
   /** Called on every poll, including the first. */
-  onUpdate?: (tx: Sep24Transaction) => void;
+  onUpdate?: (transaction: Sep24Transaction) => void;
+  /** Milliseconds between polls. Defaults to 3s. */
   intervalMs?: number;
-  /** Total budget. An anchor can take days; a UI cannot wait that long. */
-  timeoutMs?: number;
+  /** Abort signal so a closed popup can stop the loop. */
   signal?: AbortSignal;
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 3_000;
-const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1_000;
-
 /**
- * Polls until the transaction reaches a terminal status.
+ * Polls a transaction until it reaches a terminal status.
  *
- * Transient read failures do not abort the poll — an anchor briefly 502ing is
- * not a failed transfer, and treating it as one would strand a transaction the
- * user has already paid into. Only a persistent inability to read (three
- * consecutive failures) gives up.
- *
- * Timing out is not the same as failing: the returned transaction carries
- * whatever the last observed status was, so a caller can tell "still pending
- * at the anchor" from "rejected".
+ * Resolves with the final transaction. Rejects only on transport errors or
+ * abort — a terminal-but-failed status (e.g. `expired`) resolves, so the
+ * caller can render the anchor's own reason rather than a generic failure.
  */
-export async function pollUntilTerminal(options: PollOptions): Promise<Sep24Transaction> {
-  const {
-    transferServer,
-    id,
-    authToken,
-    onUpdate,
-    intervalMs = DEFAULT_POLL_INTERVAL_MS,
-    timeoutMs = DEFAULT_POLL_TIMEOUT_MS,
-    signal,
-  } = options;
+export async function pollTransaction(
+  options: PollOptions,
+): Promise<Sep24Transaction> {
+  const { transferServer, id, authToken, onUpdate, intervalMs = 3_000, signal } =
+    options;
 
-  const deadline = Date.now() + timeoutMs;
-  let consecutiveFailures = 0;
-  let last: Sep24Transaction | null = null;
-
-  while (Date.now() < deadline) {
+  for (;;) {
     if (signal?.aborted) {
       throw new Sep24Error('Polling aborted');
     }
 
-    try {
-      last = await fetchTransaction({ transferServer, id, authToken });
-      consecutiveFailures = 0;
-      onUpdate?.(last);
+    const transaction = await fetchTransaction({ transferServer, id, authToken });
+    onUpdate?.(transaction);
 
-      if (isTerminalStatus(last.status)) {
-        return last;
-      }
-    } catch (err) {
-      consecutiveFailures += 1;
-      if (consecutiveFailures >= 3) {
-        throw err instanceof Sep24Error
-          ? err
-          : new Sep24Error(`Lost contact with the anchor while polling ${id}`);
-      }
+    if (isTerminalStatus(transaction.status)) {
+      return transaction;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, intervalMs);
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(new Sep24Error('Polling aborted'));
+        },
+        { once: true },
+      );
+    });
   }
-
-  if (last) {
-    // Report the last known state rather than inventing an error status — the
-    // transfer may well still complete, and the caller needs to know it is
-    // unresolved rather than rejected.
-    return last;
-  }
-
-  throw new Sep24Error(`Timed out before reading any status for transaction ${id}`);
-}
-
-/**
- * Opens the anchor's interactive URL in a popup and resolves when it closes.
- *
- * A popup rather than a redirect so the app keeps its state and its polling
- * loop. Blocked popups are reported rather than silently doing nothing — the
- * caller should fall back to rendering the URL as a link the user can click.
- */
-export function openInteractiveWindow(url: string): { closed: Promise<void> } {
-  const popup = window.open(url, 'sep24-interactive', 'width=500,height=700');
-
-  if (!popup) {
-    throw new Sep24Error('The anchor window was blocked. Allow popups and try again.');
-  }
-
-  const closed = new Promise<void>((resolve) => {
-    const timer = setInterval(() => {
-      if (popup.closed) {
-        clearInterval(timer);
-        resolve();
-      }
-    }, 500);
-  });
-
-  return { closed };
 }
