@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { StrKey } from '@stellar/stellar-sdk';
 import { getServerSession } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
-import { isValidStellarAddress } from '@/lib/utils/stellar-address';
 
 /**
  * PATCH /api/user/wallet-address
@@ -23,7 +23,7 @@ export async function PATCH(req: NextRequest) {
   if (!address) {
     return NextResponse.json({ error: 'walletAddress is required' }, { status: 422 });
   }
-  if (!isValidStellarAddress(address)) {
+  if (!StrKey.isValidEd25519PublicKey(address)) {
     return NextResponse.json(
       { error: 'That doesn’t look like a valid Stellar address (should start with G and be 56 characters)' },
       { status: 422 }
