@@ -131,6 +131,9 @@ export function RichTextEditor({ value = '', onChange, placeholder = 'Write proj
 
 /** Read-only renderer for sanitized HTML stored from the editor */
 export function RichTextContent({ html, className }: { html: string; className?: string }) {
+  // Defence in depth: sanitize again on render even though content is
+  // sanitized on write. Stored HTML is attacker-controlled (profiles,
+  // bounty descriptions, reviews), so never trust it at the sink.
   const clean = sanitizeRichText(html);
   return (
     <div
