@@ -7,7 +7,6 @@ import { CreatorCard } from '@/components/cards/creator-card';
 import { Button } from '@/components/ui/button';
 import { ArrowRight, Sparkles, Users, Target } from 'lucide-react';
 import { trpc } from '@/lib/trpc-client';
-import { creators } from '@/lib/services/creators-data';
 import { TestimonialsSection } from '@/components/marketing/testimonials';
 import { FeaturedBounties } from '@/components/bounties/featured-bounties';
 import { AnimatedCounter } from '@/components/marketing/animated-counter';
@@ -16,6 +15,10 @@ import { CardSkeletonGrid } from '@/components/skeletons/card-skeleton';
 export default function Home() {
   const router = useRouter();
   const featuredQuery = trpc.creators.featured.useQuery({ limit: 3 });
+  const statsQuery = trpc.creators.stats.useQuery();
+
+  const creatorCount = statsQuery.data?.creatorCount ?? 0;
+  const projectCount = statsQuery.data?.projectCount ?? 0;
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -71,8 +74,8 @@ export default function Home() {
         <section className="py-12 sm:py-16 border-b border-border bg-muted/30">
           <div className="page-container">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
-              <AnimatedCounter value={creators.length} label="Tamgora Creators" suffix="+" />
-              <AnimatedCounter value={creators.reduce((sum, c) => sum + c.projects.length, 0)} label="Incredible Projects" suffix="+" />
+              <AnimatedCounter value={creatorCount} label="Tamgora Creators" suffix="+" />
+              <AnimatedCounter value={projectCount} label="Incredible Projects" suffix="+" />
               <AnimatedCounter value={15} label="Non-Tech Disciplines" suffix="+" />
             </div>
           </div>
@@ -97,6 +100,18 @@ export default function Home() {
             {/* Creators Grid */}
             {featuredQuery.isLoading ? (
               <CardSkeletonGrid count={3} />
+            ) : featuredQuery.isError ? (
+              <div className="text-center py-12 mb-12">
+                <p className="text-muted-foreground">
+                  Unable to load creators right now. Please try again later.
+                </p>
+              </div>
+            ) : (featuredQuery.data ?? []).length === 0 ? (
+              <div className="text-center py-12 mb-12">
+                <p className="text-muted-foreground">
+                  No creators yet. Be the first to join the marketplace.
+                </p>
+              </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
                 {(featuredQuery.data ?? []).map((creator) => (
@@ -163,33 +178,12 @@ export default function Home() {
                   <Sparkles size={20} className="text-secondary" />
                 </div>
                 <h3 className="text-lg sm:text-xl font-bold text-foreground mb-3">
-                  Premium Experience
+                  Showcase Your Work
                 </h3>
                 <p className="text-sm sm:text-base text-muted-foreground leading-relaxed">
-                  Showcase your portfolio on a professional platform designed for creators.
+                  Build a portfolio that highlights your unique skills and attracts top opportunities.
                 </p>
               </div>
-            </div>
-          </div>
-        </section>
-
-        {/* CTA Section */}
-        <section className="py-16 sm:py-24 border-t border-border">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-foreground mb-4 sm:mb-6">
-              Ready to Get Started?
-            </h2>
-            <p className="text-base sm:text-lg text-muted-foreground mb-8 sm:mb-10 max-w-2xl mx-auto">
-              Join thousands of creators and clients finding perfect matches on Tamgora.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-3 justify-center items-center sm:items-stretch">
-              <Button size="lg" className="w-full sm:w-auto" onClick={() => router.push('/creators')}>
-                Browse Creators
-                <ArrowRight size={18} className="ml-2" />
-              </Button>
-              <Button size="lg" variant="outline" className="w-full sm:w-auto" onClick={() => router.push('/bounties')}>
-                Post a Bounty
-              </Button>
             </div>
           </div>
         </section>

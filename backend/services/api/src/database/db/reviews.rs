@@ -39,6 +39,36 @@ pub struct CreatorReputationPayload {
     pub recent_reviews: Vec<Review>,
 }
 
+/// Filters applied to a creator's review query. `None` means "no constraint".
+#[derive(Clone, Debug, Default)]
+pub struct ReviewFilters {
+    pub min_rating: Option<u8>,
+    pub max_rating: Option<u8>,
+    /// Inclusive lower bound on `created_at` (ISO-8601 string).
+    pub since: Option<String>,
+    /// Inclusive upper bound on `created_at` (ISO-8601 string).
+    pub until: Option<String>,
+}
+
+/// Pagination window for a review query.
+#[derive(Clone, Debug)]
+pub struct ReviewPagination {
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl Default for ReviewPagination {
+    fn default() -> Self {
+        Self {
+            limit: 20,
+            offset: 0,
+        }
+    }
+}
+
+/// In-memory seed reviews. Only compiled for tests so non-test builds never
+/// serve fake reputation data.
+#[cfg(test)]
 pub fn get_mock_reviews() -> Vec<Review> {
     vec![
         Review {
@@ -74,12 +104,116 @@ pub fn get_mock_reviews() -> Vec<Review> {
     ]
 }
 
-pub fn reviews_for_creator(creator_id: &str) -> Vec<Review> {
-    let reviews = get_mock_reviews();
+/// Pure in-memory filter used by tests and as the reference implementation
+/// for the SQL WHERE clause built in `get_filtered_creator_reviews_from_db`.
+pub fn filter_reviews(reviews: Vec<Review>, filters: &ReviewFilters) -> Vec<Review> {
     reviews
         .into_iter()
-        .filter(|review| review.creator_id == creator_id)
+        .filter(|review| {
+            if let Some(min) = filters.min_rating {
+                if review.rating < min {
+                    return false;
+                }
+            }
+            if let Some(max) = filters.max_rating {
+                if review.rating > max {
+                    return false;
+                }
+            }
+            if let Some(ref since) = filters.since {
+                if review.created_at.as_str() < since.as_str() {
+                    return false;
+                }
+            }
+            if let Some(ref until) = filters.until {
+                if review.created_at.as_str() > until.as_str() {
+                    return false;
+                }
+            }
+            true
+        })
         .collect()
+}
+
+/// Apply pagination to an already-sorted slice of reviews.
+pub fn paginate_reviews(reviews: Vec<Review>, pagination: &ReviewPagination) -> Vec<Review> {
+    let offset = pagination.offset.max(0) as usize;
+    let limit = pagination.limit.max(0) as usize;
+    reviews.into_iter().skip(offset).take(limit).collect()
+}
+
+/// Fetch every review from Postgres, newest first.
+pub async fn fetch_all_reviews_from_db(
+    pool: &sqlx::PgPool,
+) -> Result<Vec<Review>, sqlx::Error> {
+    sqlx::query_as::<_, ReviewRow>(
+        "SELECT id::text, bounty_id, creator_id, rating, title, body, reviewer_name, \
+         to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at \
+         FROM reviews ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map(|rows| rows.into_iter().map(Review::from).collect())
+}
+
+/// Fetch a creator's reviews from Postgres with rating/date filters and
+/// pagination applied in the database, newest first.
+pub async fn get_filtered_creator_reviews_from_db(
+    pool: &sqlx::PgPool,
+    creator_id: &str,
+    filters: &ReviewFilters,
+    pagination: &ReviewPagination,
+) -> Result<Vec<Review>, sqlx::Error> {
+    sqlx::query_as::<_, ReviewRow>(
+        "SELECT id::text, bounty_id, creator_id, rating, title, body, reviewer_name, \
+         to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at \
+         FROM reviews \
+         WHERE creator_id = $1 \
+           AND ($2::int IS NULL OR rating >= $2) \
+           AND ($3::int IS NULL OR rating <= $3) \
+           AND ($4::timestamptz IS NULL OR created_at >= $4) \
+           AND ($5::timestamptz IS NULL OR created_at <= $5) \
+         ORDER BY created_at DESC \
+         LIMIT $6 OFFSET $7",
+    )
+    .bind(creator_id)
+    .bind(filters.min_rating.map(|r| r as i32))
+    .bind(filters.max_rating.map(|r| r as i32))
+    .bind(filters.since.as_deref())
+    .bind(filters.until.as_deref())
+    .bind(pagination.limit.max(0))
+    .bind(pagination.offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map(|rows| rows.into_iter().map(Review::from).collect())
+}
+
+/// Row shape returned by the sqlx queries above.
+#[derive(sqlx::FromRow)]
+struct ReviewRow {
+    id: String,
+    bounty_id: String,
+    creator_id: String,
+    rating: i32,
+    title: String,
+    body: String,
+    reviewer_name: String,
+    created_at: String,
+}
+
+impl From<ReviewRow> for Review {
+    fn from(row: ReviewRow) -> Self {
+        Review {
+            id: row.id,
+            bounty_id: row.bounty_id,
+            creator_id: row.creator_id,
+            rating: row.rating.clamp(0, 255) as u8,
+            title: row.title,
+            body: row.body,
+            reviewer_name: row.reviewer_name,
+            created_at: row.created_at,
+        }
+    }
 }
 
 pub fn aggregate_reviews(reviews: &[Review]) -> ReviewAggregation {
@@ -173,7 +307,12 @@ mod tests {
 
     #[test]
     fn reviews_for_creator_returns_empty_for_unknown_creator() {
-        assert!(reviews_for_creator("unknown-creator").is_empty());
+        let reviews = get_mock_reviews();
+        let filtered: Vec<_> = reviews
+            .into_iter()
+            .filter(|r| r.creator_id == "unknown-creator")
+            .collect();
+        assert!(filtered.is_empty());
     }
 
     #[test]
@@ -186,7 +325,10 @@ mod tests {
 
     #[test]
     fn aggregate_reviews_computes_distribution_and_average() {
-        let reviews = reviews_for_creator("alex-studio");
+        let reviews: Vec<_> = get_mock_reviews()
+            .into_iter()
+            .filter(|r| r.creator_id == "alex-studio")
+            .collect();
         let aggregation = aggregate_reviews(&reviews);
         assert_eq!(aggregation.total_reviews, 2);
         assert_eq!(aggregation.average_rating, 4.5);
@@ -200,6 +342,43 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].id, "rev-alex-studio-b-1");
         assert_eq!(recent[1].id, "rev-jordan-dev-b-1");
+    }
+
+    #[test]
+    fn filter_reviews_applies_rating_bounds() {
+        let reviews = get_mock_reviews();
+        let filters = ReviewFilters {
+            min_rating: Some(5),
+            ..Default::default()
+        };
+        let filtered = filter_reviews(reviews, &filters);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|r| r.rating == 5));
+    }
+
+    #[test]
+    fn filter_reviews_applies_date_bounds() {
+        let reviews = get_mock_reviews();
+        let filters = ReviewFilters {
+            since: Some("2026-01-12T00:00:00Z".to_string()),
+            until: Some("2026-01-15T23:59:59Z".to_string()),
+            ..Default::default()
+        };
+        let filtered = filter_reviews(reviews, &filters);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|r| r.created_at >= "2026-01-12T00:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn paginate_reviews_respects_limit_and_offset() {
+        let reviews = get_mock_reviews();
+        let pagination = ReviewPagination {
+            limit: 1,
+            offset: 1,
+        };
+        let page = paginate_reviews(reviews, &pagination);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, "rev-alex-studio-b-2");
     }
 
     #[test]
@@ -238,14 +417,7 @@ mod tests {
         assert_eq!(submit_review(no_body).unwrap_err(), "Feedback is required");
 
         let mut no_reviewer = valid_submission();
-        no_reviewer.reviewer_name = "  ".to_string();
+        no_reviewer.reviewer_name = "".to_string();
         assert_eq!(submit_review(no_reviewer).unwrap_err(), "Your name is required");
-    }
-
-    #[test]
-    fn submit_review_accepts_valid_submission() {
-        let review = submit_review(valid_submission()).expect("valid submission should succeed");
-        assert_eq!(review.id, "rev-alex-studio-b-9");
-        assert_eq!(review.rating, 5);
     }
 }

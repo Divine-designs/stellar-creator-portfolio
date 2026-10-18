@@ -4,10 +4,20 @@ import { useState, useRef, useEffect } from 'react';
 import { Header } from '@/components/layout/header';
 import { Footer } from '@/components/layout/footer';
 import { CreatorCard } from '@/components/cards/creator-card';
-import { disciplines } from '@/lib/services/creators-data';
 import { Button } from '@/components/ui/button';
 import { trpc } from '@/lib/trpc-client';
 import { CardSkeleton } from '@/components/skeletons/card-skeleton';
+
+const DISCIPLINES = [
+  'All',
+  'Design',
+  'Development',
+  'Writing',
+  'Video',
+  'Music',
+  'Photography',
+  'Marketing',
+] as const;
 
 export default function CreatorsPage() {
   const [selectedDiscipline, setSelectedDiscipline] = useState<string>('All');
@@ -79,7 +89,7 @@ export default function CreatorsPage() {
             <div className="flex items-center justify-between flex-wrap gap-4">
               <h2 className="text-sm font-semibold text-foreground">Filter by Discipline:</h2>
               <div className="flex flex-wrap gap-2">
-                {disciplines.map((discipline) => (
+                {DISCIPLINES.map((discipline) => (
                   <Button
                     key={discipline}
                     variant={selectedDiscipline === discipline ? 'default' : 'outline'}
@@ -151,15 +161,18 @@ export default function CreatorsPage() {
                   No creators here yet
                 </p>
                 <p className="text-sm text-muted-foreground mb-4">
-                  Nobody in the &ldquo;{selectedDiscipline}&rdquo; category has joined
-                  yet — try browsing all creators instead.
+                  {selectedDiscipline === 'All'
+                    ? 'No creators have joined yet — check back soon.'
+                    : `Nobody in the "${selectedDiscipline}" category has joined yet — try browsing all creators instead.`}
                 </p>
-                <Button
-                  variant="outline"
-                  onClick={() => setSelectedDiscipline('All')}
-                >
-                  View All Creators
-                </Button>
+                {selectedDiscipline !== 'All' && (
+                  <Button
+                    variant="outline"
+                    onClick={() => setSelectedDiscipline('All')}
+                  >
+                    View All Creators
+                  </Button>
+                )}
               </div>
             )}
           </div>
