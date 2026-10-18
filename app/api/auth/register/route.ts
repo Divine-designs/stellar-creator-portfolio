@@ -12,11 +12,9 @@ const registerSchema = z.object({
 /**
  * POST /api/auth/register — email/password account creation.
  *
- * TODO: this auto-verifies the email at creation instead of sending a real
- * verification link. lib/email/mailer.ts (which lib/email/index.ts already
- * imports from) doesn't exist yet, so there's no working mail-sending path
- * to hook up here — wire this to VerificationToken + /api/auth/verify-email
- * (both already exist) once that's built.
+ * New accounts start unverified (emailVerified: null). A VerificationToken is
+ * created and a verification link to /api/auth/verify-email is sent via the
+ * mailer. Sensitive actions must gate on a verified email.
  */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
@@ -39,7 +37,7 @@ export async function POST(req: NextRequest) {
       email,
       name: name ?? null,
       password: hashPassword(password),
-      emailVerified: new Date(),
+      emailVerified: null,
     },
   });
 
