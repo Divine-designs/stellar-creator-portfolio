@@ -156,6 +156,31 @@ async function dispatchWebhooks(event: DomainEvent): Promise<void> {
   }
 }
 
+// ── Idempotency registry ─────────────────────────────────────────────────────
+
+/**
+ * Tracks eventIds that have already been processed by a listener so that
+ * side-effects (emails, notifications) are only enqueued once per event.
+ * Keyed by `${listenerKey}:${eventId}`.
+ */
+const processedEventIds = new Set<string>();
+
+/**
+ * Atomically claim an event for a given listener. Returns `true` the first
+ * time a given (listenerKey, eventId) pair is seen, `false` on replays.
+ */
+export function claimEvent(listenerKey: string, eventId: string): boolean {
+  const key = `${listenerKey}:${eventId}`;
+  if (processedEventIds.has(key)) return false;
+  processedEventIds.add(key);
+  return true;
+}
+
+/** @internal — exposed only for tests. */
+export function _resetProcessedEvents(): void {
+  processedEventIds.clear();
+}
+
 // ── Core event bus ───────────────────────────────────────────────────────────
 
 class DomainEventBus extends EventEmitter {
