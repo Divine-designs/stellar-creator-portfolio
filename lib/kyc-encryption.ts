@@ -60,3 +60,22 @@ export async function decryptField(packed: string): Promise<string> {
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return plaintext.toString('utf8');
 }
+
+/**
+ * Encrypts a set of PII fields in one pass, preserving keys. Used by the KYC
+ * submission route (Issue #1523) so validated PII is never written to the DB
+ * in plaintext. Empty/undefined values are passed through untouched.
+ */
+export async function encryptFields<T extends Record<string, string | undefined>>(
+  fields: T,
+): Promise<{ [K in keyof T]: string | undefined }> {
+  const entries = await Promise.all(
+    Object.entries(fields).map(async ([key, value]) => {
+      if (value === undefined || value === '') {
+        return [key, value] as const;
+      }
+      return [key, await encryptField(value)] as const;
+    }),
+  );
+  return Object.fromEntries(entries) as { [K in keyof T]: string | undefined };
+}
