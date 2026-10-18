@@ -4,7 +4,7 @@
  * These tests verify the authentication middleware behavior
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
 // Mock next-auth middleware
@@ -24,6 +24,15 @@ vi.mock('next-auth/middleware', () => ({
     };
   }),
 }));
+
+// Mock next-auth session resolution used by the route wrapper
+const mockGetServerSession = vi.fn();
+vi.mock('next-auth', () => ({
+  getServerSession: (...args: unknown[]) => mockGetServerSession(...args),
+}));
+vi.mock('@/lib/auth', () => ({ authOptions: {} }));
+
+import { route } from '@/lib/auth/route';
 
 describe('Authentication Middleware', () => {
   describe('Route Protection', () => {
@@ -124,5 +133,113 @@ describe('Session Management', () => {
     };
 
     expect(session.user.role).toBe('CREATOR');
+  });
+});
+
+describe('route() wrapper', () => {
+  const makeReq = (init?: { body?: unknown; headers?: Record<string, string> }) => {
+    const req = new NextRequest(new URL('http://localhost:3000/api/test'), {
+      method: 'POST',
+      headers: init?.headers,
+      body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+    });
+    return req;
+  };
+
+  beforeEach(() => {
+    mockGetServerSession.mockReset();
+    delete process.env.CRON_SECRET;
+    delete process.env.WEBHOOK_SECRET;
+  });
+
+  it('public mode invokes handler without a session', async () => {
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+    const res = await route({ auth: 'public' }, handler)(makeReq());
+    expect(res.status).toBe(200);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('session mode rejects unauthenticated requests with 401', async () => {
+    mockGetServerSession.mockResolvedValue(null);
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+    const res = await route({ auth: 'session' }, handler)(makeReq());
+    expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json.error.code).toBe('UNAUTHORIZED');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('session mode passes the user to the handler', async () => {
+    mockGetServerSession.mockResolvedValue({ user: { id: 'u1', role: 'USER' } });
+    const handler = vi.fn(async ({ user }) => NextResponse.json({ id: user?.id }));
+    const res = await route({ auth: 'session' }, handler)(makeReq());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: 'u1' });
+  });
+
+  it('admin mode rejects non-admin users with 403', async () => {
+    mockGetServerSession.mockResolvedValue({ user: { id: 'u1', role: 'USER' } });
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+    const res = await route({ auth: 'admin' }, handler)(makeReq());
+    expect(res.status).toBe(403);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('admin mode allows admin users', async () => {
+    mockGetServerSession.mockResolvedValue({ user: { id: 'u1', role: 'ADMIN' } });
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+    const res = await route({ auth: 'admin' }, handler)(makeReq());
+    expect(res.status).toBe(200);
+  });
+
+  it('cronSecret mode requires the bearer secret', async () => {
+    process.env.CRON_SECRET = 'cron-secret';
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+
+    const denied = await route({ auth: 'cronSecret' }, handler)(makeReq());
+    expect(denied.status).toBe(401);
+
+    const allowed = await route({ auth: 'cronSecret' }, handler)(
+      makeReq({ headers: { authorization: 'Bearer cron-secret' } }),
+    );
+    expect(allowed.status).toBe(200);
+  });
+
+  it('webhook mode requires the webhook secret', async () => {
+    process.env.WEBHOOK_SECRET = 'wh-secret';
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+
+    const denied = await route({ auth: 'webhook' }, handler)(makeReq());
+    expect(denied.status).toBe(401);
+
+    const allowed = await route({ auth: 'webhook' }, handler)(
+      makeReq({ headers: { 'x-webhook-secret': 'wh-secret' } }),
+    );
+    expect(allowed.status).toBe(200);
+  });
+
+  it('validates the body and passes parsed data to the handler', async () => {
+    const schema = {
+      parse: (input: unknown) => {
+        const obj = input as { name?: string };
+        if (!obj?.name) throw { issues: [{ path: ['name'], message: 'Required' }] };
+        return { name: obj.name };
+      },
+    };
+    const handler = vi.fn(async ({ body }) => NextResponse.json(body));
+
+    const ok = await route({ auth: 'public', body: schema }, handler)(
+      makeReq({ body: { name: 'Ada' } }),
+    );
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ name: 'Ada' });
+
+    const bad = await route({ auth: 'public', body: schema }, handler)(
+      makeReq({ body: {} }),
+    );
+    expect(bad.status).toBe(400);
+    const json = await bad.json();
+    expect(json.error.code).toBe('BAD_REQUEST');
+    expect(json.error.details).toBeDefined();
   });
 });
