@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { createHash } from 'crypto';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth/config';
 import { prisma } from '@/lib/prisma';
 import { verifyKycOnChain } from '@/server/services/identity-contract';
+import { writeAuditLog } from '@/server/services/audit';
 
 /**
  * POST /api/admin/kyc/[id]/review
@@ -19,6 +21,18 @@ import { verifyKycOnChain } from '@/server/services/identity-contract';
  * stay unset until a retry succeeds.
  * On reject: marks REJECTED with the given reason; the user may resubmit.
  */
+
+const reviewSchema = z
+  .object({
+    decision: z.enum(['approve', 'reject']),
+    reason: z.string().trim().min(10).max(2000).optional(),
+  })
+  .strict()
+  .refine((data) => data.decision !== 'reject' || !!data.reason, {
+    message: 'reason is required to reject a submission',
+    path: ['reason'],
+  });
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -31,15 +45,21 @@ export async function POST(
 
   const { id } = await params;
 
-  const body = await req.json();
-  const { decision, reason } = body as { decision?: string; reason?: string };
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-  if (decision !== 'approve' && decision !== 'reject') {
-    return NextResponse.json({ error: 'decision must be "approve" or "reject"' }, { status: 400 });
+  const parsed = reviewSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', details: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
-  if (decision === 'reject' && !reason) {
-    return NextResponse.json({ error: 'reason is required to reject a submission' }, { status: 400 });
-  }
+  const { decision, reason } = parsed.data;
 
   const submission = await prisma.kYCSubmission.findUnique({
     where: { id },
@@ -65,6 +85,14 @@ export async function POST(
         rejectionReason: reason,
       },
     });
+    await writeAuditLog({
+      actorId: adminUser.id,
+      action: 'kyc.review.reject',
+      targetType: 'KYCSubmission',
+      targetId: submission.id,
+      before: { status: submission.status },
+      after: { status: updated.status, reason },
+    });
     return NextResponse.json({ id: updated.id, status: updated.status });
   }
 
@@ -84,6 +112,15 @@ export async function POST(
       data: { verified: true },
     }),
   ]);
+
+  await writeAuditLog({
+    actorId: adminUser.id,
+    action: 'kyc.review.approve',
+    targetType: 'KYCSubmission',
+    targetId: submission.id,
+    before: { status: submission.status },
+    after: { status: 'APPROVED', reason: reason ?? null },
+  });
 
   if (!submission.user.walletAddress) {
     return NextResponse.json({
