@@ -14,6 +14,7 @@ export async function GET() {
     select: {
       id: true,
       name: true,
+      prefix: true,
       scopes: true,
       lastUsedAt: true,
       expiresAt: true,
@@ -31,34 +32,64 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const body = await req.json();
-  const { name, scopes, expiresAt } = body as {
-    name: string;
-    scopes: string[];
-    expiresAt?: string;
-  };
+  let body: { name?: unknown; scopes?: unknown; expiresAt?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-  if (!name?.trim()) {
+  const { name, scopes, expiresAt } = body;
+
+  if (typeof name !== 'string' || !name.trim()) {
     return NextResponse.json({ error: 'Name is required' }, { status: 400 });
   }
 
-  const parsedScopes = parseScopes(scopes ?? []);
+  if (scopes !== undefined && !Array.isArray(scopes)) {
+    return NextResponse.json({ error: 'Scopes must be an array' }, { status: 400 });
+  }
+
+  const parsedScopes = parseScopes((scopes as string[] | undefined) ?? []);
   if (parsedScopes.length === 0) {
     return NextResponse.json({ error: 'At least one valid scope is required' }, { status: 400 });
   }
 
-  const { rawKey, keyHash } = generateApiKey();
+  let parsedExpiresAt: Date | null = null;
+  if (expiresAt !== undefined && expiresAt !== null) {
+    if (typeof expiresAt !== 'string') {
+      return NextResponse.json({ error: 'expiresAt must be an ISO date string' }, { status: 400 });
+    }
+    const date = new Date(expiresAt);
+    if (Number.isNaN(date.getTime())) {
+      return NextResponse.json({ error: 'expiresAt must be a valid date' }, { status: 400 });
+    }
+    if (date.getTime() <= Date.now()) {
+      return NextResponse.json({ error: 'expiresAt must be in the future' }, { status: 400 });
+    }
+    parsedExpiresAt = date;
+  }
+
+  const { rawKey, keyHash, prefix } = generateApiKey();
 
   const key = await prisma.apiKey.create({
     data: {
       userId: session.user.id,
       keyHash,
+      prefix,
       name: name.trim(),
       scopes: parsedScopes,
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      expiresAt: parsedExpiresAt,
     },
-    select: { id: true, name: true, scopes: true, expiresAt: true, createdAt: true },
+    select: {
+      id: true,
+      name: true,
+      prefix: true,
+      scopes: true,
+      expiresAt: true,
+      createdAt: true,
+    },
   });
 
+  // The full key is returned exactly once; only the prefix + hash are stored.
   return NextResponse.json({ key, rawKey }, { status: 201 });
 }
