@@ -9,6 +9,14 @@
  *   is reused afterwards (singleton pattern). It is deliberately not started
  *   at module load: `next build` evaluates this module without runtime
  *   secrets, and a KMS fetch there can only fail.
+ *
+ * Mobile auth:
+ *   Requests carrying an `Authorization: Bearer <access-token>` header are
+ *   authenticated via the mobile access JWT (issued by
+ *   `/api/auth/mobile/google` and refreshed via `/api/auth/mobile/refresh`)
+ *   in addition to the NextAuth session cookie. The verified claims are
+ *   forwarded to `createContext` so protected procedures can resolve the
+ *   caller without a browser session.
  */
 
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
@@ -17,6 +25,7 @@ import { createContext } from '@/server/api/trpc';
 import { initStellarClient } from '@/server/stellar/client';
 import { NextRequest } from 'next/server';
 import { logger } from '@/lib/logger';
+import { verifyMobileAccessToken } from '@/lib/mobile-auth';
 
 let stellarReady: Promise<void> | undefined;
 
@@ -32,15 +41,35 @@ function ensureStellarClient(): Promise<void> {
   return stellarReady;
 }
 
+/**
+ * Extract and verify a mobile Bearer access token, if present.
+ * Returns `undefined` when no Bearer header is supplied or it is invalid —
+ * in that case we fall back to the NextAuth cookie path in `createContext`.
+ */
+async function resolveBearer(req: NextRequest) {
+  const header = req.headers.get('authorization');
+  if (!header) return undefined;
+  const [scheme, token] = header.split(' ');
+  if (!token || scheme.toLowerCase() !== 'bearer') return undefined;
+  try {
+    return await verifyMobileAccessToken(token);
+  } catch (err) {
+    logger.warn('[tRPC] Invalid mobile Bearer token', { err: String(err) });
+    return undefined;
+  }
+}
+
 const handler = async (req: NextRequest) => {
   // Resolves immediately on every call after the first.
   await ensureStellarClient();
+
+  const bearer = await resolveBearer(req);
 
   return fetchRequestHandler({
     endpoint: '/api/trpc',
     req,
     router: appRouter,
-    createContext: () => createContext(req),
+    createContext: () => createContext(req, bearer),
     onError:
       process.env.NODE_ENV === 'development'
         ? ({ path, error }) => {
