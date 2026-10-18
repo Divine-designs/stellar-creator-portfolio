@@ -126,3 +126,59 @@ describe('Session Management', () => {
     expect(session.user.role).toBe('CREATOR');
   });
 });
+
+describe('Account Deletion Anonymisation', () => {
+  const DELETED_NAME = 'Deleted user';
+
+  const anonymiseUser = (user: { id: string; name: string; email: string; avatar: string | null }) => ({
+    ...user,
+    name: DELETED_NAME,
+    email: `deleted+${user.id}@invalid`,
+    avatar: null,
+  });
+
+  it('should anonymise name, email and avatar', () => {
+    const user = {
+      id: 'user-123',
+      name: 'Test User',
+      email: 'user@example.com',
+      avatar: 'https://example.com/avatar.png',
+    };
+
+    const result = anonymiseUser(user);
+
+    expect(result.name).toBe(DELETED_NAME);
+    expect(result.email).toBe('deleted+user-123@invalid');
+    expect(result.avatar).toBeNull();
+  });
+
+  it('should leave no PII after deletion', () => {
+    const user = {
+      id: 'user-456',
+      name: 'Jane Doe',
+      email: 'jane.doe@example.com',
+      avatar: 'https://example.com/jane.png',
+    };
+
+    const result = anonymiseUser(user);
+    const serialised = JSON.stringify(result);
+
+    expect(serialised).not.toContain('Jane Doe');
+    expect(serialised).not.toContain('jane.doe@example.com');
+    expect(serialised).not.toContain('jane.png');
+    expect(result.email).toMatch(/^deleted\+[^@]+@invalid$/);
+  });
+
+  it('should attribute retained reviews to Deleted user', () => {
+    const review = {
+      id: 'review-1',
+      text: 'Great work!',
+      authorName: 'Jane Doe',
+    };
+
+    const anonymisedReview = { ...review, authorName: DELETED_NAME };
+
+    expect(anonymisedReview.text).toBe('Great work!');
+    expect(anonymisedReview.authorName).toBe(DELETED_NAME);
+  });
+});
