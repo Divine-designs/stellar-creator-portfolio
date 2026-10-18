@@ -4,6 +4,10 @@ import { useState, useCallback, useEffect } from 'react';
 
 /**
  * Wallet connection state and utilities for Stellar accounts.
+ *
+ * This is the single wallet hook. It replaces the former `useStellarAuth`
+ * hook so that only one module persists `{ publicKey }` to localStorage and
+ * manages connection state.
  */
 
 export interface StellarWallet {
