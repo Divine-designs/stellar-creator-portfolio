@@ -133,6 +133,19 @@ export interface WebSocketMessage<T = WebSocketEventPayload> {
   timestamp: number;
 }
 
+// Connection lifecycle events emitted by the consolidated client
+export type WebSocketConnectionState =
+  | 'connecting'
+  | 'open'
+  | 'reconnecting'
+  | 'closed';
+
+export interface WebSocketConnectionEvent {
+  state: WebSocketConnectionState;
+  attempt?: number;
+  timestamp: number;
+}
+
 // Error Models
 export interface ApiError {
   code: string;

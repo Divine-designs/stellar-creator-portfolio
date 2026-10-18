@@ -22,7 +22,10 @@ interface WalletContextValue extends WalletState {
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
-const STORAGE_KEY = 'stellar_wallet';
+// Single source of truth for the persisted wallet session. `useStellarWallet`
+// and `useStellarAuth` both read from this key via the wallet context, so the
+// session can never diverge between hooks.
+export const WALLET_STORAGE_KEY = 'stellar_wallet';
 
 interface PersistedWallet {
   address: string;
@@ -110,7 +113,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
     async function restoreAndVerify() {
       try {
-        const raw = localStorage.getItem(STORAGE_KEY);
+        const raw = localStorage.getItem(WALLET_STORAGE_KEY);
         if (!raw) return;
         const saved: PersistedWallet = JSON.parse(raw);
         if (!saved.address || !saved.publicKey || !saved.walletType) return;
@@ -136,7 +139,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // Wallet not actually connected; clear saved state
           if (!cancelled) {
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(WALLET_STORAGE_KEY);
             setState((s) => ({
               ...s,
               isConnected: false,
@@ -148,7 +151,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         if (!cancelled) {
-          localStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem(WALLET_STORAGE_KEY);
         }
       }
     }
@@ -166,7 +169,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const adapter = await getWalletAdapter(walletType);
       const [publicKey, network] = await Promise.all([adapter.getPublicKey(), adapter.getNetwork()]);
       const persisted: PersistedWallet = { address: publicKey, publicKey, network, walletType };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      localStorage.setItem(WALLET_STORAGE_KEY, JSON.stringify(persisted));
       setState({
         address: publicKey,
         publicKey,
@@ -183,7 +186,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const disconnect = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(WALLET_STORAGE_KEY);
     setState({
       address: null,
       publicKey: null,
