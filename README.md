@@ -11,11 +11,19 @@ automatically by CI on every push to `main`
 commits the current addresses and WASM hashes to
 **[`deployments/testnet.json`](./deployments/testnet.json)**, which the app reads.
 See [`docs/deployments.md`](./docs/deployments.md) for the schema and runbook.
+Error codes and events for every canonical contract are catalogued in
+[`docs/contracts.md`](./docs/contracts.md), including the not-yet-deployed
+`insurance` and `stellar_insights` (reputation) crates.
 
-The table below is a one-time manual testnet deployment of the **legacy
-top-level** `contracts/` tree. That tree has since been archived (see the note
-below). These contracts are still live as of this writing, but nothing in the
-platform integrates against them:
+> **Historical — legacy testnet addresses.** The table below is a one-time
+> manual testnet deployment of the **legacy top-level** `contracts/` tree.
+> That tree has since been archived (source preserved at commit `734cff58`;
+> see [ADR 0003](./docs/adr/0003-legacy-contracts-tree-archived.md) and
+> [#1552](./docs/issues/1552-legacy-contracts-tree.md) for the rationale).
+> These contracts are still live on testnet as of this writing, but nothing
+> in the platform integrates against them — do not wire against these
+> addresses. The canonical escrow lives in `backend/contracts/escrow` and is
+> deployed by CI.
 
 | Contract | Address |
 |---|---|
@@ -69,13 +77,7 @@ Network passphrase: `Test SDF Network ; September 2015`
 ├── prisma/           # Database schema & migrations
 ├── __tests__/        # Vitest suites (others sit beside the code they test)
 ├── e2e/              # Playwright specs
-├── contracts/        # Legacy Soroban contracts (see note below)
-│   ├── escrow/       #   Payment escrow with milestone releases
-│   ├── vault/        #   Multi-vault batch withdrawal
-│   ├── amm/          #   Constant-product AMM (x*y=k)
-│   ├── analytics/    #   On-chain event analytics
-│   └── core/         #   Dispute arbitration, storage TTL, simulation
-├── backend/          # Rust workspace: API services
+├── backend/          # Rust workspace: API services (no top-level contracts/ — see note below)
 │   └── contracts/    #   Canonical Soroban contracts (see note below)
 ├── mobile/           # React Native app (Expo), with its own toolchain
 ├── infrastructure/   # Kubernetes, monitoring and AWS configuration
@@ -95,7 +97,9 @@ Network passphrase: `Test SDF Network ; September 2015`
 > equivalent and back the legacy testnet addresses above, is preserved in git
 > history at commit `734cff58`
 > (e.g. `git show 734cff58:contracts/vault/src/lib.rs`). To revive one, port it
-> into `backend/contracts/` against SDK 23.
+> into `backend/contracts/` against SDK 23. The decision and alternatives
+> considered are recorded in [ADR 0003](./docs/adr/0003-legacy-contracts-tree-archived.md)
+> (see [#1552](./docs/issues/1552-legacy-contracts-tree.md)).
 
 See [`docs/architecture.md`](./docs/architecture.md) for a platform-wide
 diagram of how the Next.js app, tRPC/GraphQL/REST, the Rust API, realtime
@@ -313,18 +317,25 @@ before running it.
 
 ### Smart Contracts
 
-Build and deploy contracts to testnet:
+Build and deploy contracts to testnet. CI does this automatically on every
+push to `main` (see [`docs/contracts.md`](./docs/contracts.md) for the full
+pipeline); the snippet below is for a one-off manual deploy from a
+checkout of `backend/contracts/`:
 
 ```bash
-cd contracts/escrow
-stellar contract build           # produces wasm32v1-none WASM
+cd backend/contracts/escrow
+cargo build --release --target wasm32v1-none   # produces wasm32v1-none WASM
 stellar contract deploy \
-  --wasm target/wasm32v1-none/release/escrow.wasm \
+  --wasm target/wasm32v1-none/release/stellar_escrow_contract.wasm \
   --source <your-key-name> \
   --network testnet
 ```
 
-Set the returned contract ID as `CONTRACT_ID` in your `.env.local`.
+Set the returned contract ID as `CONTRACT_ID` in your `.env.local`. The
+canonical contracts built by CI are listed in
+[`backend/Cargo.toml`](./backend/Cargo.toml); workspace members not yet in
+the deploy pipeline (`core`, `insurance`, `referral`, `stellar_insights`,
+`test-utils`) are documented in [`docs/contracts.md`](./docs/contracts.md).
 
 ## Key Features
 
@@ -362,6 +373,7 @@ The app uses `output: 'standalone'` (Next.js) and can be deployed to:
 7. Freelancer payouts and receipt generation: See [`docs/PAYMENTS.md`](./docs/PAYMENTS.md)
 8. Running integration tests against a Docker PostgreSQL instance: See [`docs/TEST_DATABASE.md`](./docs/TEST_DATABASE.md)
 9. Playwright multi-context messaging E2E tests: See [`e2e/README.md`](./e2e/README.md)
+10. Audit/cleanup decisions for contracts and rate-limiting live in [`docs/issues/`](./docs/issues/) with matching ADRs in [`docs/adr/`](./docs/adr/): [#1552](./docs/issues/1552-legacy-contracts-tree.md) (legacy `contracts/` tree archived — [ADR 0003](./docs/adr/0003-legacy-contracts-tree-archived.md)), [#1553](./docs/issues/1553-stellar-insights-contract.md) (`stellar_insights` → `reputation` rename — [ADR 0004](./docs/adr/0004-stellar-insights-contract-purpose.md)), [#1554](./docs/issues/1554-insurance-contract.md) (`insurance` contract wiring — [ADR 0005](./docs/adr/0005-insurance-contract-status.md)), [#1555](./docs/issues/1555-backend-limit-package.md) (`backend/limit` removal — [ADR 0006](./docs/adr/0006-backend-limit-rate-limiter.md))
 
 ## License
 

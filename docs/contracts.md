@@ -307,7 +307,38 @@ should match on the code instead.
 | 5 | `ReferralNotFound` | No referral for that address |
 | 6 | `NoUnclaimedRewards` | Nothing to claim |
 
+### Insurance (`InsuranceError`)
+
+The insurance contract
+([`backend/contracts/insurance/`](../backend/contracts/insurance/)) is a
+workspace member and is covered by the workspace-level clippy gate, but is
+**not** yet in the `deploy-contracts.yml` build/deploy pipeline or the
+`package.json` `smart-contract:clippy` script. See
+[`docs/issues/1554-insurance-contract.md`](issues/1554-insurance-contract.md)
+and [ADR 0005](adr/0005-insurance-contract-status.md) for the wiring plan.
+
+| Code | Variant | Meaning |
+|---|---|---|
+| 1 | `NotInitialized` | Call before `initialize` |
+| 2 | `AlreadyInitialized` | `initialize` called twice |
+| 3 | `Unauthorized` | Caller is not the stored admin (governance multisig) |
+| 4 | `ClaimNotFound` | No claim with that id |
+| 5 | `ClaimNotApproved` | `execute_payout` on a non-`Approved` claim |
+| 6 | `ClaimAlreadyExecuted` | `execute_payout` on an `Executed` claim |
+| 7 | `InsufficientPoolBalance` | Payout would exceed the pool balance |
+| 8 | `InvalidAmount` | Amount ≤ 0 |
+| 9 | `VotingPeriodNotEnded` | `approve_claim` before `voting_deadline` (3-day window) |
+| 10 | `ClaimAlreadyApproved` | Claim is not in `Pending` status |
+
 ### Stellar Insights (`InsightsError`)
+
+`backend/contracts/stellar_insights/` is the platform's creator reputation
+and review-integrity contract — records 1–5 star reviews, allows staked
+challenges against fake reviews, and tracks time-decaying reputation.
+See [`docs/issues/1553-stellar-insights-contract.md`](issues/1553-stellar-insights-contract.md)
+and [ADR 0004](adr/0004-stellar-insights-contract-purpose.md) for the
+planned rename to `reputation`. Like `insurance`, it is a workspace member
+but not yet in the deploy pipeline.
 
 | Code | Variant | Meaning |
 |---|---|---|
@@ -366,3 +397,41 @@ topic names so current consumers don't break.
 | WASM upgraded | `("contract", "upgraded")` | `new_wasm_hash: BytesN<32>` |
 
 `symbol_short!` is limited to 9 characters, hence `freelncr`.
+
+### Insurance
+
+Topics are `("ins", action)`. Emitted by
+[`backend/contracts/insurance/`](../backend/contracts/insurance/); see
+[`docs/issues/1554-insurance-contract.md`](issues/1554-insurance-contract.md).
+
+| Transition | Topics | Data |
+|---|---|---|
+| Pool contribution | `("ins", "contrib")` | `(from: Address, token: Address, amount: i128)` |
+| Claim submitted | `("ins", "claim")` | `(id: u64, claimant: Address, token: Address, amount: i128)` |
+| Claim approved | `("ins", "approved")` | `claim_id: u64` |
+| Claim rejected | `("ins", "rejected")` | `claim_id: u64` |
+| Payout executed | `("ins", "payout")` | `(claim_id: u64, claimant: Address, token: Address, amount: i128)` |
+
+### Reputation (currently `stellar_insights`)
+
+Topics are `("review", action)` or `("rep", action)` / `("bty_done", …)` /
+`("contract", action)`. Emitted by
+[`backend/contracts/stellar_insights/`](../backend/contracts/stellar_insights/);
+see [`docs/issues/1553-stellar-insights-contract.md`](issues/1553-stellar-insights-contract.md).
+
+| Transition | Topics | Data |
+|---|---|---|
+| Review recorded | `("review", "recorded")` | `(id: u64, creator: Address, reviewer: Address, rating: u32)` |
+| Review challenged | `("review", "challeng")` | `(review_id: u64, challenger: Address)` |
+| Challenge upheld | `("review", "upheld")` | `(review_id: u64, challenger: Address)` |
+| Challenge rejected | `("review", "reject")` | `(review_id: u64, challenger: Address)` |
+| Reputation set | `("rep_set", creator)` | `score: i64` |
+| Bounty completion recorded | `("bty_done", creator)` | `(score: i64, bounties_completed: u64)` |
+| Decay rate set | `("rep", "decay_set")` | `new_rate: i64` |
+| WASM upgraded | `("contract", "upgraded")` | `new_wasm_hash: BytesN<32>` |
+
+`symbol_short!` is limited to 9 characters, hence `challeng` and
+`freelncr`. The Reputation contract still uses the deprecated
+`Events::publish` (kept as-is for SDK 23; migration to `#[contractevent]`
+is a separate change because it shifts the on-chain event topic/data layout
+the indexer decodes).
