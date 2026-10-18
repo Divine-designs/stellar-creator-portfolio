@@ -13,6 +13,23 @@
 
 import { onEvent, onAnyEvent } from '@/server/services/events';
 import { logger } from '@/lib/logger';
+import { enqueueEmail } from '@/lib/email/mailer';
+import { notifyMatchedCreators } from '@/lib/matching-engine';
+
+// ── Idempotency ───────────────────────────────────────────────────────────────
+
+/**
+ * Tracks event IDs whose side-effects have already been dispatched so that
+ * duplicate deliveries of the same event do not enqueue emails/notifications
+ * more than once.
+ */
+const processedEventIds = new Set<string>();
+
+function markProcessed(eventId: string): boolean {
+  if (processedEventIds.has(eventId)) return false;
+  processedEventIds.add(eventId);
+  return true;
+}
 
 // ── BountyCreated ─────────────────────────────────────────────────────────────
 
@@ -22,8 +39,6 @@ import { logger } from '@/lib/logger';
  *  2. Notify matched creators about the new opportunity.
  */
 onEvent('BountyCreated', async ({ payload, eventId, createdAt }) => {
-  // TODO: replace with actual email service call
-  // e.g. await emailQueue.enqueue('bounty-created', { bountyId: payload.bountyId, ... })
   logger.info('BountyCreated', {
     eventId,
     createdAt,
@@ -32,8 +47,23 @@ onEvent('BountyCreated', async ({ payload, eventId, createdAt }) => {
     title: payload.title,
     budget: payload.budget,
   });
+
+  // Idempotency: only dispatch side-effects once per event.
+  if (!markProcessed(eventId)) {
+    logger.debug('BountyCreated:duplicate', { eventId, bountyId: payload.bountyId });
+    return;
+  }
+
   // Non-blocking: push email job to queue
-  // await notificationService.notifyMatchedCreators(payload.bountyId);
+  await enqueueEmail('bounty-created', {
+    bountyId: payload.bountyId,
+    creatorId: payload.creatorId,
+    title: payload.title,
+    budget: payload.budget,
+  });
+
+  // Notify creators matched to this bounty.
+  await notifyMatchedCreators(payload.bountyId);
 });
 
 // ── BountyUpdated ─────────────────────────────────────────────────────────────
