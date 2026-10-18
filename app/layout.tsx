@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { headers } from 'next/headers';
 
 import { Analytics } from '@vercel/analytics/next';
 import { ThemeProvider } from 'next-themes';
@@ -70,11 +71,14 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Per-request nonce set by middleware.ts; forwarded to <Script nonce>.
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
+
   return (
     <html lang="en" suppressHydrationWarning className="scroll-smooth">
       <body className="font-sans antialiased transition-smooth">
@@ -95,7 +99,7 @@ export default function RootLayout({
               </TRPCProvider>
             </WalletProvider>
           </SessionProvider>
-          <Analytics />
+          <Analytics nonce={nonce} />
         </ThemeProvider>
       </body>
     </html>
