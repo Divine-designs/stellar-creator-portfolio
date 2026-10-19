@@ -1,6 +1,10 @@
 # Tamgora
 
+[![CI](https://github.com/yosemite01/stellar-creator-portfolio/actions/workflows/ci.yml/badge.svg)](https://github.com/yosemite01/stellar-creator-portfolio/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/yosemite01/stellar-creator-portfolio/branch/main/graph/badge.svg)](https://codecov.io/gh/yosemite01/stellar-creator-portfolio)
+
 A full-stack platform connecting non-technical tech professionals (designers, writers, marketers, PMs) with bounties, clients, and collaborators — powered by Stellar/Soroban smart contracts.
+
 
 ## Live Contracts — Stellar Testnet
 
