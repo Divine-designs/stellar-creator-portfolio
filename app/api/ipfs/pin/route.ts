@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { buildGatewayUrl } from '@/lib/ipfs/gateways';
+import { HashMismatchError, PinUnavailableError, pinFile } from '@/lib/ipfs/pinner';
 
-export const runtime = 'edge';
-
-function sha256ToCid(sha256: string): string {
-  return `bafy${sha256.slice(0, 52)}`;
-}
+// Pinning persists to Postgres via Prisma, which needs the Node runtime.
+export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   const form = await req.formData();
@@ -15,23 +14,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'file required' }, { status: 400 });
   }
 
-  const buffer = await file.arrayBuffer();
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-  const sha256 = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  const name = (file instanceof File && file.name) || 'upload';
 
-  if (expectedSha256 && sha256 !== expectedSha256.toLowerCase()) {
-    return NextResponse.json({ error: 'Hash mismatch' }, { status: 422 });
+  try {
+    const { cid, sha256, size } = await pinFile(file, { name, expectedSha256 });
+    return NextResponse.json({
+      cid,
+      sha256,
+      size,
+      gatewayUrl: buildGatewayUrl(cid),
+    });
+  } catch (err) {
+    if (err instanceof HashMismatchError) {
+      return NextResponse.json({ error: 'Hash mismatch' }, { status: 422 });
+    }
+    if (err instanceof PinUnavailableError) {
+      // Never fall back to a fabricated CID (issue #1507).
+      return NextResponse.json(
+        { error: 'Pinning service unavailable', retryable: true },
+        { status: 503 },
+      );
+    }
+    throw err;
   }
-
-  const cid = sha256ToCid(sha256);
-  const gatewayUrl = `https://ipfs.io/ipfs/${cid}`;
-
-  return NextResponse.json({
-    cid,
-    sha256,
-    size: buffer.byteLength,
-    gatewayUrl,
-  });
 }
