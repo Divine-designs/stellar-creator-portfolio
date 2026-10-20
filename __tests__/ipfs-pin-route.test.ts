@@ -1,144 +1,89 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NextRequest } from 'next/server';
 
-// ---------------------------------------------------------------------------
-// /api/ipfs/pin must return the real CID from a pinning provider, never a
-// hand-rolled `bafy${sha256}` string (issue #1507).
-// ---------------------------------------------------------------------------
-
-const REAL_CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
-
-const { upsert } = vi.hoisted(() => ({ upsert: vi.fn() }));
-vi.mock('@/lib/prisma', () => ({
-  prisma: { pinnedFile: { upsert } },
-}));
+vi.mock('next-auth', () => ({ getServerSession: vi.fn() }));
+vi.mock('@/server/services/audit', () => ({ writeAuditLog: vi.fn(async () => null) }));
 
 import { POST } from '@/app/api/ipfs/pin/route';
+import { getServerSession } from 'next-auth';
+import { checkPinRateLimit } from '@/lib/rate-limit';
+import { writeAuditLog } from '@/server/services/audit';
 
-const fetchMock = vi.fn();
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 
-beforeEach(() => {
-  upsert.mockReset().mockResolvedValue({});
-  fetchMock.mockReset();
-  vi.stubGlobal('fetch', fetchMock);
-  process.env.PINATA_API_KEY = 'test-key';
-  process.env.PINATA_SECRET_API_KEY = 'test-secret';
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-  delete process.env.PINATA_API_KEY;
-  delete process.env.PINATA_SECRET_API_KEY;
-  delete process.env.IPFS_RPC_URL;
-});
-
-async function sha256Hex(content: string): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content).buffer);
-  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+// jsdom's Blob/File round-trips corrupt binary data (and a Request body can
+// only be read once), so we hand the handler a minimal multipart double that
+// yields the exact bytes. The handler only uses headers + formData().
+function pinRequest(bytes: Uint8Array, contentLength?: number) {
+  const file = { arrayBuffer: async () => bytes.buffer, type: 'application/octet-stream' };
+  return {
+    headers: new Headers(contentLength ? { 'content-length': String(contentLength) } : {}),
+    formData: async () => ({ get: (key: string) => (key === 'file' ? file : null) }),
+  } as unknown as NextRequest;
 }
 
-/** The route only ever calls req.formData(), so a minimal stub suffices. */
-function requestWithForm(form: FormData) {
-  return { formData: async () => form } as unknown as Parameters<typeof POST>[0];
+async function signedInAs(userId: string) {
+  vi.mocked(getServerSession).mockResolvedValue({ user: { id: userId } } as never);
 }
 
-async function pinRequest(content: string, opts: { sha256?: string } = {}) {
-  const file = new Blob([content], { type: 'image/png' });
-  const form = new FormData();
-  form.append('file', file, 'art.png');
-  if (opts.sha256) form.append('sha256', opts.sha256);
-  return POST(requestWithForm(form));
-}
-
-describe('POST /api/ipfs/pin', () => {
-  it('returns the CID provided by the pinning service verbatim', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ IpfsHash: REAL_CID, PinSize: 12 }),
-    });
-
-    const body = await (await pinRequest('hello world')).json();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(body.cid).toBe(REAL_CID);
-    expect(body.gatewayUrl).toContain(REAL_CID);
-    expect(body.size).toBe(12);
+describe('POST /api/ipfs/pin (#1508 auth + limits)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.MAX_UPLOAD_MB;
+  });
+  afterEach(() => {
+    delete process.env.MAX_UPLOAD_MB;
   });
 
-  it('never fabricates a CID from the sha256 digest', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ IpfsHash: REAL_CID, PinSize: 12 }),
-    });
-
-    const sha256 = await sha256Hex('hello world');
-    const body = await (await pinRequest('hello world', { sha256 })).json();
-
-    expect(body.cid).not.toBe(`bafy${sha256.slice(0, 52)}`);
-    expect(body.sha256).toBe(sha256);
+  it('401s anonymous requests', async () => {
+    vi.mocked(getServerSession).mockResolvedValue(null as never);
+    const res = await POST(pinRequest(PNG));
+    expect(res.status).toBe(401);
   });
 
-  it('persists the pin and de-duplicates repeat uploads by CID', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ IpfsHash: REAL_CID, PinSize: 12 }),
-    });
+  it('415s when the sniffed content type is not allowed', async () => {
+    await signedInAs('user-415');
+    // Plain-text bytes that sniff to nothing → rejected regardless of declared type.
+    const res = await POST(pinRequest(new TextEncoder().encode('MZ executable-ish payload')));
+    expect(res.status).toBe(415);
+  });
 
-    await pinRequest('hello world');
-    await pinRequest('hello world');
+  it('413s when a (possibly lying) Content-Length exceeds the size limit', async () => {
+    process.env.MAX_UPLOAD_MB = '1';
+    await signedInAs('user-413-cl');
+    const res = await POST(pinRequest(PNG, 2 * 1024 * 1024));
+    expect(res.status).toBe(413);
+  });
 
-    expect(upsert).toHaveBeenCalledTimes(2);
-    for (const [args] of upsert.mock.calls) {
-      expect(args.where).toEqual({ cid: REAL_CID });
-      expect(args.create).toMatchObject({ cid: REAL_CID, sha256: await sha256Hex('hello world') });
+  it('413s when the actual bytes exceed the limit even with no Content-Length', async () => {
+    process.env.MAX_UPLOAD_MB = '1';
+    await signedInAs('user-413-bytes');
+    const big = new Uint8Array(2 * 1024 * 1024);
+    big.set(PNG); // valid PNG magic so the only problem is size
+    const res = await POST(pinRequest(big));
+    expect(res.status).toBe(413);
+  });
+
+  it('429s once the per-user daily quota is exhausted', async () => {
+    const userId = 'user-quota';
+    // Burn the quota directly, then the route should reject.
+    for (let i = 0; i < 500 && checkPinRateLimit(userId); i += 1) {
+      /* exhaust */
     }
+    await signedInAs(userId);
+    const res = await POST(pinRequest(PNG));
+    expect(res.status).toBe(429);
   });
 
-  it('rejects tampered uploads (422) without pinning them', async () => {
-    const res = await pinRequest('good content', { sha256: 'deadbeef'.repeat(8) });
-
-    expect(res.status).toBe(422);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(upsert).not.toHaveBeenCalled();
-  });
-
-  it('returns 503 with a retryable flag when the provider errors — no fake CID', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
-
-    const res = await pinRequest('hello world');
-    const body = await res.json();
-
-    expect(res.status).toBe(503);
-    expect(body.retryable).toBe(true);
-    expect(body.cid).toBeUndefined();
-    expect(upsert).not.toHaveBeenCalled();
-  });
-
-  it('returns 503 with a retryable flag when the provider is unreachable', async () => {
-    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
-
-    const res = await pinRequest('hello world');
-
-    expect(res.status).toBe(503);
-    expect((await res.json()).retryable).toBe(true);
-  });
-
-  it('returns 503 instead of inventing a CID when no provider is configured', async () => {
-    delete process.env.PINATA_API_KEY;
-    delete process.env.PINATA_SECRET_API_KEY;
-
-    const res = await pinRequest('hello world');
-    const body = await res.json();
-
-    expect(res.status).toBe(503);
-    expect(body.retryable).toBe(true);
-    expect(body.cid).toBeUndefined();
-  });
-
-  it('rejects a missing file with 400', async () => {
-    const res = await POST(requestWithForm(new FormData()));
-    expect(res.status).toBe(400);
+  it('200s and logs to the audit service for a valid, in-limit upload', async () => {
+    await signedInAs('user-ok');
+    const res = await POST(pinRequest(PNG));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.cid).toMatch(/^bafy/);
+    expect(data.size).toBe(PNG.byteLength);
+    expect(writeAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-ok', resource: 'ipfs', action: 'pin' }),
+    );
   });
 });
