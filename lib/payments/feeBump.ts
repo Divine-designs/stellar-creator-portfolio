@@ -59,10 +59,15 @@ export function horizonUrl(): string {
 }
 
 /**
- * Decode a user-signed envelope for the configured network.  Rejects (400)
- * XDR that does not decode and envelopes that are already fee-bumped.
+ * Decode a user-signed envelope for the configured network.  Rejects (400) a
+ * missing or non-string value, XDR that does not decode and envelopes that are
+ * already fee-bumped.
  */
-export function parseInnerTransaction(xdrEnvelope: string): Transaction {
+export function parseInnerTransaction(xdrEnvelope: unknown): Transaction {
+  if (typeof xdrEnvelope !== 'string' || !xdrEnvelope) {
+    throw new SponsorError('Missing xdr', 400);
+  }
+
   let parsed: Transaction | FeeBumpTransaction;
   try {
     parsed = TransactionBuilder.fromXDR(xdrEnvelope, networkPassphrase()) as

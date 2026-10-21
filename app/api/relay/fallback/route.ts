@@ -25,17 +25,16 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { xdr } = await req.json();
-    if (!xdr || typeof xdr !== 'string') {
-      return NextResponse.json({ error: 'Missing xdr' }, { status: 400 });
-    }
-
-    authorizeFallback(userId, parseInnerTransaction(xdr));
+    const body = await req.json().catch(() => null);
+    // Throws SponsorError(400) for a missing or malformed xdr, so the policy
+    // check below always runs on a parsed transaction.
+    const inner = parseInnerTransaction(body?.xdr);
+    authorizeFallback(userId, inner);
 
     const horizonRes = await fetch(`${FALLBACK_HORIZON_URL}/transactions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ tx: xdr }),
+      body: new URLSearchParams({ tx: inner.toXDR() }),
     });
 
     const horizonBody = await horizonRes.json();

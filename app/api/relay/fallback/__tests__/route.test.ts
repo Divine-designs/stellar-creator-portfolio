@@ -33,7 +33,7 @@ function signedXdr(kind: 'contract' | 'payment'): string {
 function request(body: unknown) {
   return new NextRequest('http://localhost/api/relay/fallback', {
     method: 'POST',
-    body: JSON.stringify(body),
+    body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 }
 
@@ -62,6 +62,23 @@ describe('POST /api/relay/fallback', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['is missing', {}],
+    ['is not a string', { xdr: 42 }],
+    ['is empty', { xdr: '' }],
+  ])('returns 400 "Missing xdr" when xdr %s', async (_name, body) => {
+    const res = await POST(request(body));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Missing xdr' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when the body is not JSON', async () => {
+    const res = await POST(request('not json'));
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns 400 for XDR that does not decode', async () => {
     const res = await POST(request({ xdr: 'not-valid-xdr' }));
     expect(res.status).toBe(400);
@@ -81,10 +98,13 @@ describe('POST /api/relay/fallback', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards an allowed transaction to the fallback Horizon', async () => {
-    const res = await POST(request({ xdr: signedXdr('contract') }));
+  it('forwards an allowed transaction to the fallback Horizon unchanged', async () => {
+    const xdr = signedXdr('contract');
+    const res = await POST(request({ xdr }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ hash: 'h', ledger: 5 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = fetchMock.mock.calls[0][1] as { body: URLSearchParams };
+    expect(sent.body.get('tx')).toBe(xdr);
   });
 });
